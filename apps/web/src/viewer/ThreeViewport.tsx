@@ -1,22 +1,19 @@
-import React, { useRef, useState, useMemo, useEffect } from "react";
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, Center, Float, Grid } from "@react-three/drei";
+import React, { useRef, useState, useMemo } from "react";
+import { Canvas } from "@react-three/fiber";
+import { OrbitControls, Center, Grid } from "@react-three/drei";
 import * as THREE from "three";
 import { OBJLoader } from "three-stdlib";
 import { 
   Camera, 
   RotateCw, 
   Layers, 
-  Sparkles, 
   Download, 
-  Eye, 
-  Maximize2,
-  Minimize2,
-  Box
+  Box,
+  Palette
 } from "lucide-react";
 import { exportToSTL, exportToOBJ, exportToGLB } from "../engine/exporter.js";
 
-export type MaterialTheme = "clay" | "chrome" | "hologram" | "emerald" | "gold" | "normal" | "wireframe";
+export type MaterialTheme = "semantic" | "clay" | "chrome" | "hologram" | "gold" | "normal" | "wireframe";
 
 interface ThreeViewportProps {
   geometry: THREE.BufferGeometry | null;
@@ -38,7 +35,6 @@ function ModelMesh({
 }) {
   const meshRef = useRef<THREE.Mesh>(null);
 
-  // If OBJ string was provided (e.g. from Shap-E)
   const parsedOBJGeometry = useMemo(() => {
     if (!objText) return null;
     try {
@@ -65,6 +61,13 @@ function ModelMesh({
   // Material selection
   const material = useMemo(() => {
     switch (materialTheme) {
+      case "semantic":
+        return new THREE.MeshStandardMaterial({
+          vertexColors: true,
+          roughness: 0.5,
+          metalness: 0.15,
+          wireframe,
+        });
       case "clay":
         return new THREE.MeshStandardMaterial({
           color: "#e2d9cc",
@@ -90,17 +93,6 @@ function ModelMesh({
           thickness: 1.2,
           wireframe,
         });
-      case "emerald":
-        return new THREE.MeshPhysicalMaterial({
-          color: "#10b981",
-          emissive: "#064e3b",
-          emissiveIntensity: 0.25,
-          roughness: 0.2,
-          metalness: 0.3,
-          transmission: 0.5,
-          thickness: 0.8,
-          wireframe,
-        });
       case "gold":
         return new THREE.MeshStandardMaterial({
           color: "#fbbf24",
@@ -113,7 +105,7 @@ function ModelMesh({
       case "wireframe":
         return new THREE.MeshBasicMaterial({ color: "#a855f7", wireframe: true });
       default:
-        return new THREE.MeshStandardMaterial({ color: "#cbd5e1", roughness: 0.5, wireframe });
+        return new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, wireframe });
     }
   }, [materialTheme, wireframe]);
 
@@ -129,7 +121,7 @@ function ModelMesh({
 function SceneLights() {
   return (
     <>
-      <ambientLight intensity={0.6} />
+      <ambientLight intensity={0.7} />
       <directionalLight position={[10, 15, 10]} intensity={1.2} castShadow />
       <directionalLight position={[-10, 10, -10]} intensity={0.6} color="#818cf8" />
       <pointLight position={[0, -5, 5]} intensity={0.4} color="#ec4899" />
@@ -138,7 +130,7 @@ function SceneLights() {
 }
 
 export function ThreeViewport({ geometry, objText, loading, meshStats }: ThreeViewportProps) {
-  const [materialTheme, setMaterialTheme] = useState<MaterialTheme>("clay");
+  const [materialTheme, setMaterialTheme] = useState<MaterialTheme>("semantic");
   const [wireframe, setWireframe] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
@@ -206,7 +198,7 @@ export function ThreeViewport({ geometry, objText, loading, meshStats }: ThreeVi
         >
           <div className="animate-spin" style={{ width: 44, height: 44, border: "3px solid rgba(99, 102, 241, 0.2)", borderTopColor: "#6366f1", borderRadius: "50%" }} />
           <div style={{ fontSize: 14, fontWeight: 500, color: "#f8fafc" }}>
-            Computing Organic Surface Mesh...
+            Computing Organic Surface & Vertex Colors...
           </div>
         </div>
       )}
@@ -220,13 +212,13 @@ export function ThreeViewport({ geometry, objText, loading, meshStats }: ThreeVi
           className="btn btn-sm"
           style={{ background: "rgba(0,0,0,0.3)", border: "none", outline: "none", cursor: "pointer" }}
         >
-          <option value="clay">🎨 Warm Clay</option>
+          <option value="semantic">🎨 Model Painted Colors</option>
+          <option value="clay">🏺 Matte Sculpt Clay</option>
           <option value="chrome">🔮 Cyber Chrome</option>
           <option value="hologram">✨ Hologram Glass</option>
-          <option value="emerald">💎 Emerald Jewel</option>
           <option value="gold">🏆 Pure Gold</option>
           <option value="normal">🌈 Normal Vector</option>
-          <option value="wireframe">📐 Wireframe</option>
+          <option value="wireframe">📐 Wireframe Mesh</option>
         </select>
 
         {/* Toggle Wireframe overlay */}

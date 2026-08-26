@@ -1,12 +1,12 @@
 import * as THREE from "three";
 import type { SDFDocument, SDFNode, Vec3 } from "@madder/sdf-dsl";
-import { evaluateSDF, computeSDFNormal } from "./sdf-evaluator.js";
+import { evaluateSDFWithMaterial, computeSDFNormal } from "./sdf-evaluator.js";
 import { EDGE_TABLE, TRI_TABLE } from "./marching-cubes-tables.js";
 
 export interface MeshGenerationOptions {
-  resolution?: number; // Voxel count along each dimension (e.g. 64 or 96)
+  resolution?: number;
   bounds?: { min: Vec3; max: Vec3 };
-  isoLevel?: number; // Surface iso-value (default 0.0)
+  isoLevel?: number;
 }
 
 export function generateSDFMesh(
@@ -20,7 +20,7 @@ export function generateSDFMesh(
     options.bounds ||
     ("bounds" in docOrNode && docOrNode.bounds
       ? docOrNode.bounds
-      : { min: [-3, -3, -3], max: [3, 3, 3] });
+      : { min: [-3.5, -3.5, -3.5], max: [3.5, 3.5, 3.5] });
   const isoLevel = options.isoLevel ?? 0.0;
 
   const N = resolution;
@@ -30,24 +30,31 @@ export function generateSDFMesh(
   const stepY = (max[1] - min[1]) / (N - 1);
   const stepZ = (max[2] - min[2]) / (N - 1);
 
-  // 1. Precompute 3D scalar field grid
+  // 1. Precompute 3D scalar field grid and color field
   const grid = new Float32Array(N * N * N);
+  const colorGrid = new Float32Array(N * N * N * 3);
   let idx = 0;
+  let colorIdx = 0;
+
   for (let z = 0; z < N; z++) {
     const pz = min[2] + z * stepZ;
     for (let y = 0; y < N; y++) {
       const py = min[1] + y * stepY;
       for (let x = 0; x < N; x++) {
         const px = min[0] + x * stepX;
-        grid[idx++] = evaluateSDF(rootNode, [px, py, pz]);
+        const evalRes = evaluateSDFWithMaterial(rootNode, [px, py, pz]);
+        grid[idx++] = evalRes.distance;
+        colorGrid[colorIdx++] = evalRes.color[0];
+        colorGrid[colorIdx++] = evalRes.color[1];
+        colorGrid[colorIdx++] = evalRes.color[2];
       }
     }
   }
 
   const positions: number[] = [];
   const normals: number[] = [];
+  const colors: number[] = [];
 
-  // Corner offsets
   const cornerOffsets: [number, number, number][] = [
     [0, 0, 0],
     [1, 0, 0],
@@ -59,38 +66,51 @@ export function generateSDFMesh(
     [0, 1, 1],
   ];
 
-  // Helper to interpolate between two vertices on an edge
   const vertList: [number, number, number][] = new Array(12);
+  const colorList: [number, number, number][] = new Array(12);
 
   function getGridValue(x: number, y: number, z: number): number {
     return grid[x + y * N + z * N * N];
   }
 
+  function getGridColor(x: number, y: number, z: number): [number, number, number] {
+    const base = (x + y * N + z * N * N) * 3;
+    return [colorGrid[base], colorGrid[base + 1], colorGrid[base + 2]];
+  }
+
   function interpolateVertex(
     p1: Vec3,
     p2: Vec3,
+    c1: [number, number, number],
+    c2: [number, number, number],
     val1: number,
     val2: number
-  ): [number, number, number] {
-    if (Math.abs(isoLevel - val1) < 0.00001) return [p1[0], p1[1], p1[2]];
-    if (Math.abs(isoLevel - val2) < 0.00001) return [p2[0], p2[1], p2[2]];
-    if (Math.abs(val1 - val2) < 0.00001) return [p1[0], p1[1], p1[2]];
+  ): { pos: [number, number, number]; color: [number, number, number] } {
+    if (Math.abs(isoLevel - val1) < 0.00001) return { pos: [p1[0], p1[1], p1[2]], color: c1 };
+    if (Math.abs(isoLevel - val2) < 0.00001) return { pos: [p2[0], p2[1], p2[2]], color: c2 };
+    if (Math.abs(val1 - val2) < 0.00001) return { pos: [p1[0], p1[1], p1[2]], color: c1 };
+    
     const mu = (isoLevel - val1) / (val2 - val1);
-    return [
+    const pos: [number, number, number] = [
       p1[0] + mu * (p2[0] - p1[0]),
       p1[1] + mu * (p2[1] - p1[1]),
       p1[2] + mu * (p2[2] - p1[2]),
     ];
+    const color: [number, number, number] = [
+      c1[0] + mu * (c2[0] - c1[0]),
+      c1[1] + mu * (c2[1] - c1[1]),
+      c1[2] + mu * (c2[2] - c1[2]),
+    ];
+    return { pos, color };
   }
 
-  // 2. Iterate each voxel cell
   for (let z = 0; z < N - 1; z++) {
     for (let y = 0; y < N - 1; y++) {
       for (let x = 0; x < N - 1; x++) {
-        // Calculate cube index
         let cubeIndex = 0;
         const cellVals: number[] = [];
         const cellPos: Vec3[] = [];
+        const cellColors: [number, number, number][] = [];
 
         for (let i = 0; i < 8; i++) {
           const cx = x + cornerOffsets[i][0];
@@ -99,6 +119,7 @@ export function generateSDFMesh(
           const val = getGridValue(cx, cy, cz);
           cellVals.push(val);
           cellPos.push([min[0] + cx * stepX, min[1] + cy * stepY, min[2] + cz * stepZ]);
+          cellColors.push(getGridColor(cx, cy, cz));
           if (val < isoLevel) {
             cubeIndex |= 1 << i;
           }
@@ -107,29 +128,45 @@ export function generateSDFMesh(
         const edgeMask = EDGE_TABLE[cubeIndex];
         if (edgeMask === 0) continue;
 
-        // Find intersection points on active edges
-        if (edgeMask & 1) vertList[0] = interpolateVertex(cellPos[0], cellPos[1], cellVals[0], cellVals[1]);
-        if (edgeMask & 2) vertList[1] = interpolateVertex(cellPos[1], cellPos[2], cellVals[1], cellVals[2]);
-        if (edgeMask & 4) vertList[2] = interpolateVertex(cellPos[2], cellPos[3], cellVals[2], cellVals[3]);
-        if (edgeMask & 8) vertList[3] = interpolateVertex(cellPos[3], cellPos[0], cellVals[3], cellVals[0]);
-        if (edgeMask & 16) vertList[4] = interpolateVertex(cellPos[4], cellPos[5], cellVals[4], cellVals[5]);
-        if (edgeMask & 32) vertList[5] = interpolateVertex(cellPos[5], cellPos[6], cellVals[5], cellVals[6]);
-        if (edgeMask & 64) vertList[6] = interpolateVertex(cellPos[6], cellPos[7], cellVals[6], cellVals[7]);
-        if (edgeMask & 128) vertList[7] = interpolateVertex(cellPos[7], cellPos[4], cellVals[7], cellVals[4]);
-        if (edgeMask & 256) vertList[8] = interpolateVertex(cellPos[0], cellPos[4], cellVals[0], cellVals[4]);
-        if (edgeMask & 512) vertList[9] = interpolateVertex(cellPos[1], cellPos[5], cellVals[1], cellVals[5]);
-        if (edgeMask & 1024) vertList[10] = interpolateVertex(cellPos[2], cellPos[6], cellVals[2], cellVals[6]);
-        if (edgeMask & 2048) vertList[11] = interpolateVertex(cellPos[3], cellPos[7], cellVals[3], cellVals[7]);
+        const setEdge = (edgeIdx: number, i1: number, i2: number) => {
+          const res = interpolateVertex(cellPos[i1], cellPos[i2], cellColors[i1], cellColors[i2], cellVals[i1], cellVals[i2]);
+          vertList[edgeIdx] = res.pos;
+          colorList[edgeIdx] = res.color;
+        };
 
-        // Emit triangles
+        if (edgeMask & 1) setEdge(0, 0, 1);
+        if (edgeMask & 2) setEdge(1, 1, 2);
+        if (edgeMask & 4) setEdge(2, 2, 3);
+        if (edgeMask & 8) setEdge(3, 3, 0);
+        if (edgeMask & 16) setEdge(4, 4, 5);
+        if (edgeMask & 32) setEdge(5, 5, 6);
+        if (edgeMask & 64) setEdge(6, 6, 7);
+        if (edgeMask & 128) setEdge(7, 7, 4);
+        if (edgeMask & 256) setEdge(8, 0, 4);
+        if (edgeMask & 512) setEdge(9, 1, 5);
+        if (edgeMask & 1024) setEdge(10, 2, 6);
+        if (edgeMask & 2048) setEdge(11, 3, 7);
+
         for (let i = 0; TRI_TABLE[cubeIndex * 16 + i] !== -1; i += 3) {
-          const v0 = vertList[TRI_TABLE[cubeIndex * 16 + i]];
-          const v1 = vertList[TRI_TABLE[cubeIndex * 16 + i + 1]];
-          const v2 = vertList[TRI_TABLE[cubeIndex * 16 + i + 2]];
+          const idx0 = TRI_TABLE[cubeIndex * 16 + i];
+          const idx1 = TRI_TABLE[cubeIndex * 16 + i + 1];
+          const idx2 = TRI_TABLE[cubeIndex * 16 + i + 2];
+
+          const v0 = vertList[idx0];
+          const v1 = vertList[idx1];
+          const v2 = vertList[idx2];
 
           positions.push(v0[0], v0[1], v0[2]);
           positions.push(v1[0], v1[1], v1[2]);
           positions.push(v2[0], v2[1], v2[2]);
+
+          const c0 = colorList[idx0];
+          const c1 = colorList[idx1];
+          const c2 = colorList[idx2];
+
+          colors.push(c0[0], c0[1], c0[2]);
+          colors.push(c1[0], c1[1], c1[2]);
+          colors.push(c2[0], c2[1], c2[2]);
 
           const n0 = computeSDFNormal(rootNode, v0);
           const n1 = computeSDFNormal(rootNode, v1);
@@ -146,6 +183,7 @@ export function generateSDFMesh(
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute("normal", new THREE.Float32BufferAttribute(normals, 3));
+  geometry.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
 
   return geometry;
 }

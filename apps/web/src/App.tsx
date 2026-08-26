@@ -1,16 +1,16 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import * as THREE from "three";
 import type { SDFDocument } from "@madder/sdf-dsl";
 import { PRESETS } from "@madder/sdf-dsl";
-import { generateSDFMesh } from "./engine/marching-cubes.js";
 import { Header } from "./components/Header.js";
 import { ThreeViewport } from "./viewer/ThreeViewport.js";
 import { RefineMode } from "./modes/RefineMode.js";
-import { GenerateMode } from "./modes/GenerateMode.js";
+import { CreateMode } from "./modes/CreateMode.js";
 import { CodeInspector } from "./components/CodeInspector.js";
+import type { WorkerOutputMessage } from "./engine/marching-cubes-worker.js";
 
 export function App() {
-  const [activeMode, setActiveMode] = useState<"generate" | "refine">("refine");
+  const [activeMode, setActiveMode] = useState<"create" | "refine">("refine");
   
   // SDF History stack for Undo/Redo
   const [history, setHistory] = useState<SDFDocument[]>([PRESETS.honeycombHouse]);
@@ -20,40 +20,63 @@ export function App() {
 
   // Viewport Geometry & Stats
   const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
-  const [objText, setObjText] = useState<string | null>(null);
   const [loadingMesh, setLoadingMesh] = useState(false);
   const [meshStats, setMeshStats] = useState<{ triangles: number; timeMs: number; resolution: number } | undefined>();
 
   // Modals
   const [isCodeInspectorOpen, setIsCodeInspectorOpen] = useState(false);
 
-  // Compute mesh when currentDocument changes
-  const computeMesh = useCallback((doc: SDFDocument) => {
-    setLoadingMesh(true);
-    const start = performance.now();
+  // Background Web Worker reference to keep UI thread at 60 FPS
+  const workerRef = useRef<Worker | null>(null);
 
-    requestAnimationFrame(() => {
-      try {
-        const geom = generateSDFMesh(doc, {
-          resolution: doc.resolution || 96,
-          bounds: doc.bounds,
-        });
-        const elapsed = performance.now() - start;
-        const triCount = (geom.getAttribute("position")?.count || 0) / 3;
+  useEffect(() => {
+    // Instantiate background worker
+    try {
+      workerRef.current = new Worker(
+        new URL("./engine/marching-cubes-worker.ts", import.meta.url),
+        { type: "module" }
+      );
+
+      workerRef.current.onmessage = (e: MessageEvent<WorkerOutputMessage>) => {
+        const { positions, normals, colors, triangleCount, elapsedMs, resolution } = e.data;
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
+        geom.setAttribute("normal", new THREE.BufferAttribute(normals, 3));
+        geom.setAttribute("color", new THREE.BufferAttribute(colors, 3));
 
         setGeometry(geom);
-        setObjText(null); // Clear raw OBJ when using active SDF
         setMeshStats({
-          triangles: triCount,
-          timeMs: elapsed,
-          resolution: doc.resolution || 96,
+          triangles: triangleCount,
+          timeMs: elapsedMs,
+          resolution,
         });
-      } catch (err) {
-        console.error("Failed to generate SDF mesh:", err);
-      } finally {
         setLoadingMesh(false);
-      }
-    });
+      };
+
+      workerRef.current.onerror = (err) => {
+        console.error("Marching Cubes Worker error:", err);
+        setLoadingMesh(false);
+      };
+    } catch (err) {
+      console.warn("Web Worker initialization failed, will fallback to sync:", err);
+    }
+
+    return () => {
+      workerRef.current?.terminate();
+    };
+  }, []);
+
+  // Compute mesh asynchronously on background thread
+  const computeMesh = useCallback((doc: SDFDocument) => {
+    setLoadingMesh(true);
+
+    if (workerRef.current) {
+      workerRef.current.postMessage({
+        docOrNode: doc,
+        resolution: doc.resolution || 64,
+        bounds: doc.bounds,
+      });
+    }
   }, []);
 
   useEffect(() => {
@@ -80,16 +103,6 @@ export function App() {
     }
   };
 
-  const handleGeneratedOBJ = (rawObj: string) => {
-    setObjText(rawObj);
-    setGeometry(null);
-    setMeshStats({
-      triangles: 25000,
-      timeMs: 12,
-      resolution: 0,
-    });
-  };
-
   const handleSendToRefine = (doc: SDFDocument) => {
     handleUpdateDocument(doc);
     setActiveMode("refine");
@@ -106,7 +119,12 @@ export function App() {
 
       {/* Main Workspace */}
       <main className="app-main">
-        {activeMode === "refine" ? (
+        {activeMode === "create" ? (
+          <CreateMode
+            onModelCreated={handleUpdateDocument}
+            onSendToRefine={handleSendToRefine}
+          />
+        ) : (
           <RefineMode
             currentDocument={currentDocument}
             onUpdateDocument={handleUpdateDocument}
@@ -115,17 +133,11 @@ export function App() {
             onUndo={handleUndo}
             onRedo={handleRedo}
           />
-        ) : (
-          <GenerateMode
-            onGeneratedOBJ={handleGeneratedOBJ}
-            onSendToRefine={handleSendToRefine}
-          />
         )}
 
         {/* 3D Interactive Viewport */}
         <ThreeViewport
           geometry={geometry}
-          objText={objText}
           loading={loadingMesh}
           meshStats={meshStats}
         />

@@ -2,8 +2,8 @@ import React from "react";
 import { Sparkles, Wand2, Code } from "lucide-react";
 
 interface HeaderProps {
-  activeMode: "generate" | "refine";
-  setActiveMode: (mode: "generate" | "refine") => void;
+  activeMode: "create" | "refine";
+  setActiveMode: (mode: "create" | "refine") => void;
   onOpenJsonEditor: () => void;
 }
 
@@ -43,12 +43,12 @@ export function Header({
       {/* Mode Switcher */}
       <div className="mode-switcher">
         <button
-          className={`mode-tab ${activeMode === "generate" ? "active generate" : ""}`}
-          onClick={() => setActiveMode("generate")}
-          id="mode-tab-generate"
+          className={`mode-tab ${activeMode === "create" ? "active generate" : ""}`}
+          onClick={() => setActiveMode("create")}
+          id="mode-tab-create"
         >
           <Wand2 size={16} />
-          <span>Generate (MVDream)</span>
+          <span>Create (From Scratch)</span>
         </button>
 
         <button
@@ -57,7 +57,7 @@ export function Header({
           id="mode-tab-refine"
         >
           <Sparkles size={16} />
-          <span>Refine (SDF-DSL)</span>
+          <span>Refine (Sculpt & Modify)</span>
         </button>
       </div>
 
