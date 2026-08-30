@@ -5,6 +5,10 @@
   "outputDirectory": "apps/web/dist",
   "rewrites": [
     {
+      "source": "/api/(.*)",
+      "destination": "https://madder-models.onrender.com/api/$1"
+    },
+    {
       "source": "/(.*)",
       "destination": "/index.html"
     }
