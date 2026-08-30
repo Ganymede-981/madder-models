@@ -9,6 +9,10 @@ export default defineConfig({
       "@madder/sdf-dsl": path.resolve(__dirname, "../../packages/sdf-dsl/src"),
     },
   },
+  build: {
+    outDir: "../../dist",
+    emptyOutDir: true,
+  },
   server: {
     port: 5173,
     proxy: {
