@@ -1,8 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "vite",
-  "buildCommand": "npm run build",
-  "outputDirectory": "dist",
+  "buildCommand": "npm --workspace=packages/sdf-dsl run build && npm --workspace=apps/web run build",
+  "outputDirectory": "apps/web/dist",
+  "installCommand": "npm install",
   "rewrites": [
     {
       "source": "/api/(.*)",
