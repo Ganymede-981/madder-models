@@ -162,13 +162,21 @@ function ViewportTransformGizmo({
 
   useEffect(() => {
     if (dummyMeshRef.current && activeObject) {
-      dummyMeshRef.current.position.set(...activeObject.translate);
+      dummyMeshRef.current.position.set(
+        activeObject.translate[0],
+        activeObject.translate[1],
+        activeObject.translate[2]
+      );
       dummyMeshRef.current.rotation.set(
         (activeObject.rotate[0] * Math.PI) / 180,
         (activeObject.rotate[1] * Math.PI) / 180,
         (activeObject.rotate[2] * Math.PI) / 180
       );
-      dummyMeshRef.current.scale.set(...activeObject.scale);
+      dummyMeshRef.current.scale.set(
+        activeObject.scale[0],
+        activeObject.scale[1],
+        activeObject.scale[2]
+      );
     }
   }, [activeObject]);
 

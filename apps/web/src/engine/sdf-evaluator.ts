@@ -349,7 +349,7 @@ export function computeTightAABB(node: SDFNode): AABB {
     // Combiners — union of children AABBs
     case "union":
     case "smoothUnion": {
-      return node.children.reduce<AABB>((acc, ch) => mergeAABB(acc, computeTightAABB(ch)), EMPTY_AABB);
+      return (node.children || []).reduce<AABB>((acc: AABB, ch: SDFNode) => mergeAABB(acc, computeTightAABB(ch)), EMPTY_AABB);
     }
     case "intersection":
     case "smoothIntersection": {

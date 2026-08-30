@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "npm --workspace=apps/web run dev",
     "api": "python apps/api/main.py",
-    "build": "npm --workspaces run build",
+    "build": "npm --workspace=packages/sdf-dsl run build && npm --workspace=apps/web run build",
     "typecheck": "npm --workspaces run typecheck"
   },
   "devDependencies": {
