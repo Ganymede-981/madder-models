@@ -62,7 +62,7 @@ export function CreateMode({ onModelCreated, onSendToRefine }: CreateModeProps) 
     await new Promise((r) => setTimeout(r, 50));
 
     try {
-      const response = await fetch("/api/create", {
+      const response = await fetch(`${import.meta.env.VITE_API_URL ?? ""}/api/create`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt: q }),

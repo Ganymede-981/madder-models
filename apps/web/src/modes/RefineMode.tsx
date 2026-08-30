@@ -78,7 +78,7 @@ export function RefineMode({
     setPrompt("");
 
     try {
-      const response = await fetch("/api/refine", {
+      const response = await fetch(`${import.meta.env.VITE_API_URL ?? ""}/api/refine`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
