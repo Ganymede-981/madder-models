@@ -1,11 +1,19 @@
-# Node & NPM
+# Dependencies & Package Managers
 node_modules/
+.pnp
+.pnp.js
+.npm
+package-lock.json.bak
+
+# Build Outputs & Bundles
 dist/
 build/
-.npm
-*.log
+out/
+.next/
+.turbo/
+*.tsbuildinfo
 
-# Python
+# Python & Virtual Environments
 __pycache__/
 *.py[cod]
 *$py.class
@@ -15,15 +23,62 @@ env/
 venv/
 .venv/
 ENV/
+build/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Environment Variables & Secrets (NEVER COMMIT API KEYS)
+# MLflow & Evaluation Artifacts
+mlruns/
+mlartifacts/
+eval/eval_artifacts/
+eval_artifacts/
+*.ipynb_checkpoints/
+.pytest_cache/
+
+# Environment Variables & Secrets (CRITICAL: NEVER COMMIT KEYS)
 .env
 .env.local
 .env.*.local
+*.env
 
-# IDE & OS
+# Vercel Deployment
+.vercel
+
+# Logs & Temporary Files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# IDE & Operating System Files
 .vscode/
 .idea/
+*.sublime-project
+*.sublime-workspace
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 *.swp
+*.swo
+
+# Test & Debug Outputs
+test_*.png
+eval_test.png
+snapshot.png

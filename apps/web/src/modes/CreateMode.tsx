@@ -39,8 +39,11 @@ const INSPIRATION_PRESETS = [
 export function CreateMode({ onModelCreated, onSendToRefine }: CreateModeProps) {
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
+  const [loadingPhase, setLoadingPhase] = useState<"planning" | "sculpting" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lastCreated, setLastCreated] = useState<SDFDocument | null>(null);
+  const [lastPipeline, setLastPipeline] = useState<string | null>(null);
+  const [lastBlueprint, setLastBlueprint] = useState<any | null>(null);
 
   const handleCreate = async (queryText?: string) => {
     const q = (queryText || prompt).trim();
@@ -48,6 +51,15 @@ export function CreateMode({ onModelCreated, onSendToRefine }: CreateModeProps) 
 
     setError(null);
     setLoading(true);
+    setLastBlueprint(null);
+    setLastPipeline(null);
+
+    // Heuristic: short / keyword prompts go single-shot, complex ones go through Architect
+    const mightBeComplex = q.split(" ").length > 5 && !/^(a |an )?(sphere|box|cube|cylinder|torus|ring|cone|pyramid|capsule)/i.test(q);
+    setLoadingPhase(mightBeComplex ? "planning" : "sculpting");
+
+    // Delay to let the phase update render before fetch blocks
+    await new Promise((r) => setTimeout(r, 50));
 
     try {
       const response = await fetch("/api/create", {
@@ -62,6 +74,14 @@ export function CreateMode({ onModelCreated, onSendToRefine }: CreateModeProps) 
       }
 
       const data = await response.json();
+
+      // If Architect ran first, briefly show "sculpting" phase before validation
+      if (data.pipeline === "architect_sculptor" && data.document?._blueprint) {
+        setLoadingPhase("sculpting");
+        setLastBlueprint(data.document._blueprint);
+        await new Promise((r) => setTimeout(r, 300));
+      }
+
       const validation = validateSDFDocument(data.document);
 
       if (!validation.success || !validation.data) {
@@ -69,12 +89,15 @@ export function CreateMode({ onModelCreated, onSendToRefine }: CreateModeProps) 
       }
 
       setLastCreated(validation.data);
+      setLastPipeline(data.pipeline || "single_shot");
+      if (data.document?._blueprint) setLastBlueprint(data.document._blueprint);
       onModelCreated(validation.data);
     } catch (err: any) {
       console.error(err);
       setError(err.message || "Failed to create 3D model.");
     } finally {
       setLoading(false);
+      setLoadingPhase(null);
     }
   };
 
@@ -97,7 +120,8 @@ export function CreateMode({ onModelCreated, onSendToRefine }: CreateModeProps) 
           <div style={{ fontWeight: 700, fontSize: 16 }}>Create Studio (From Scratch)</div>
         </div>
         <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.4 }}>
-          Generate vivid, organic 3D models with painted semantic colors directly from natural language prompts in &lt;200ms.
+          Generate vivid 3D models from natural language. Complex prompts auto-route through the
+          two-stage <strong style={{ color: "#a78bfa" }}>Architect &amp; Sculptor</strong> pipeline for richer geometry.
         </div>
       </div>
 
@@ -142,7 +166,11 @@ export function CreateMode({ onModelCreated, onSendToRefine }: CreateModeProps) 
           {loading ? (
             <>
               <div className="animate-spin" style={{ width: 16, height: 16, border: "2px solid #fff", borderTopColor: "transparent", borderRadius: "50%" }} />
-              <span>Synthesizing 3D Geometry with Groq...</span>
+              <span>
+                {loadingPhase === "planning"
+                  ? "Planning scene blueprint..."
+                  : "Synthesizing 3D geometry..."}
+              </span>
             </>
           ) : (
             <>
@@ -228,10 +256,44 @@ export function CreateMode({ onModelCreated, onSendToRefine }: CreateModeProps) 
         >
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
             <Rocket size={16} color="#c084fc" />
-            <div style={{ fontSize: 13, fontWeight: 600 }}>Ready to sculpt & modify?</div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>Ready to sculpt &amp; modify?</div>
+            {lastPipeline === "architect_sculptor" && (
+              <span
+                style={{
+                  marginLeft: "auto",
+                  fontSize: 10,
+                  padding: "2px 7px",
+                  borderRadius: "var(--radius-sm)",
+                  background: "rgba(167, 139, 250, 0.18)",
+                  color: "#a78bfa",
+                  border: "1px solid rgba(167, 139, 250, 0.35)",
+                }}
+              >
+                🏛️ {lastBlueprint?.parts?.length ?? "?"}-Part Architect
+              </span>
+            )}
           </div>
+          {lastBlueprint?.parts?.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 10 }}>
+              {lastBlueprint.parts.map((part: any, i: number) => (
+                <span
+                  key={i}
+                  style={{
+                    fontSize: 10,
+                    padding: "2px 6px",
+                    borderRadius: "var(--radius-sm)",
+                    background: "rgba(0,0,0,0.3)",
+                    color: "#cbd5e1",
+                    border: "1px solid rgba(255,255,255,0.1)",
+                  }}
+                >
+                  {part.name}
+                </span>
+              ))}
+            </div>
+          )}
           <div style={{ fontSize: 12, color: "var(--text-secondary)", marginBottom: 12 }}>
-            Switch to Refine Studio to carve cavities, add twisting arches, or tweak dimensions conversatively.
+            Switch to Refine Studio to carve cavities, add twisting arches, or tweak dimensions.
           </div>
           <button
             onClick={() => onSendToRefine(lastCreated)}

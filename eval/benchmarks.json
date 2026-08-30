@@ -1,0 +1,38 @@
+[
+  {
+    "id": "bench_01_honeycomb_house",
+    "category": "Architecture",
+    "prompt": "An organic biomimetic house with smooth curved sandstone dome, amber carved hexagonal cells, and a slate blue foundation.",
+    "expected_features": ["sandstone dome", "hexagonal cells", "foundation base", "smooth blending"]
+  },
+  {
+    "id": "bench_02_bioluminescent_jellyfish",
+    "category": "Creature",
+    "prompt": "A deep-sea bioluminescent organism with glowing translucent cyan umbrella dome, rose pink tentacles, and emerald floating orbs.",
+    "expected_features": ["umbrella dome cap", "curved tentacles", "floating orbs", "vivid colors"]
+  },
+  {
+    "id": "bench_03_stealth_starship",
+    "category": "Vehicle",
+    "prompt": "A symmetrical sci-fi spacecraft with dark matte hull, golden cockpit dome, and dual glowing cyan plasma thrusters.",
+    "expected_features": ["symmetrical wings/hull", "cockpit dome", "dual thrusters", "sleek silhouette"]
+  },
+  {
+    "id": "bench_04_crimson_mushroom",
+    "category": "Flora",
+    "prompt": "An organic bio-pod with curved crimson cap, creamy ivory stalk, and smooth moss green root base.",
+    "expected_features": ["crimson cap", "stalk", "root base", "organic curves"]
+  },
+  {
+    "id": "bench_05_twisted_monolith",
+    "category": "SciFi",
+    "prompt": "A futuristic tower with dark carbon twisted spire, radiant gold energy rings, and cyan illuminated interior windows.",
+    "expected_features": ["twisted spire", "gold rings", "interior cutouts", "proper nesting"]
+  },
+  {
+    "id": "bench_06_pyramids_giza",
+    "category": "Architecture",
+    "prompt": "The Pyramids of Giza with three stepped pyramid monuments, golden pyramidion caps, and a desert sandstone ground plane.",
+    "expected_features": ["multiple pyramid structures", "gold caps", "ground plane", "spatial layout"]
+  }
+]

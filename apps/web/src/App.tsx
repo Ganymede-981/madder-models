@@ -3,7 +3,7 @@ import * as THREE from "three";
 import type { SDFDocument } from "@madder/sdf-dsl";
 import { PRESETS } from "@madder/sdf-dsl";
 import { Header } from "./components/Header.js";
-import { ThreeViewport } from "./viewer/ThreeViewport.js";
+import { ThreeViewport, type TransformMode } from "./viewer/ThreeViewport.js";
 import { RefineMode } from "./modes/RefineMode.js";
 import { CreateMode } from "./modes/CreateMode.js";
 import { CodeInspector } from "./components/CodeInspector.js";
@@ -18,6 +18,10 @@ export function App() {
 
   const currentDocument = history[historyIndex] || PRESETS.honeycombHouse;
 
+  // Selected Object & 3D Transform Mode
+  const [selectedObjectId, setSelectedObjectId] = useState<string | null>(null);
+  const [transformMode, setTransformMode] = useState<TransformMode>("translate");
+
   // Viewport Geometry & Stats
   const [geometry, setGeometry] = useState<THREE.BufferGeometry | null>(null);
   const [loadingMesh, setLoadingMesh] = useState(false);
@@ -28,6 +32,8 @@ export function App() {
 
   // Background Web Worker reference to keep UI thread at 60 FPS
   const workerRef = useRef<Worker | null>(null);
+  const activeJobId = useRef(0);
+  const debounceTimerRef = useRef<any>(null);
 
   useEffect(() => {
     // Instantiate background worker
@@ -38,6 +44,11 @@ export function App() {
       );
 
       workerRef.current.onmessage = (e: MessageEvent<WorkerOutputMessage>) => {
+        // Only accept result if it corresponds to the latest active job
+        if (e.data.jobId !== undefined && e.data.jobId !== activeJobId.current) {
+          return;
+        }
+
         const { positions, normals, colors, triangleCount, elapsedMs, resolution } = e.data;
         const geom = new THREE.BufferGeometry();
         geom.setAttribute("position", new THREE.BufferAttribute(positions, 3));
@@ -63,20 +74,29 @@ export function App() {
 
     return () => {
       workerRef.current?.terminate();
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     };
   }, []);
 
-  // Compute mesh asynchronously on background thread
+  // Compute mesh asynchronously on background thread with lightweight debouncing
   const computeMesh = useCallback((doc: SDFDocument) => {
-    setLoadingMesh(true);
-
-    if (workerRef.current) {
-      workerRef.current.postMessage({
-        docOrNode: doc,
-        resolution: doc.resolution || 64,
-        bounds: doc.bounds,
-      });
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
     }
+
+    debounceTimerRef.current = setTimeout(() => {
+      const jobId = ++activeJobId.current;
+      setLoadingMesh(true);
+
+      if (workerRef.current) {
+        workerRef.current.postMessage({
+          jobId,
+          docOrNode: doc,
+          resolution: doc.resolution || 64,
+          bounds: doc.bounds,
+        });
+      }
+    }, 40);
   }, []);
 
   useEffect(() => {
@@ -132,14 +152,22 @@ export function App() {
             canRedo={historyIndex < history.length - 1}
             onUndo={handleUndo}
             onRedo={handleRedo}
+            selectedObjectId={selectedObjectId}
+            onSelectObject={setSelectedObjectId}
           />
         )}
 
-        {/* 3D Interactive Viewport */}
+        {/* 3D Interactive Viewport with Transform Gizmos & Controls */}
         <ThreeViewport
           geometry={geometry}
           loading={loadingMesh}
           meshStats={meshStats}
+          document={currentDocument}
+          selectedObjectId={selectedObjectId}
+          onSelectObject={setSelectedObjectId}
+          onUpdateDocument={handleUpdateDocument}
+          transformMode={transformMode}
+          onTransformModeChange={setTransformMode}
         />
       </main>
 

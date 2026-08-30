@@ -1,6 +1,6 @@
-import React, { useRef, useState, useMemo } from "react";
+import React, { useRef, useState, useMemo, useEffect } from "react";
 import { Canvas } from "@react-three/fiber";
-import { OrbitControls, Center, Grid } from "@react-three/drei";
+import { OrbitControls, Center, Grid, TransformControls } from "@react-three/drei";
 import * as THREE from "three";
 import { OBJLoader } from "three-stdlib";
 import { 
@@ -9,17 +9,31 @@ import {
   Layers, 
   Download, 
   Box,
-  Palette
+  Palette,
+  Move,
+  Maximize2,
+  MousePointer,
+  Sparkles
 } from "lucide-react";
+import type { SDFDocument, Vec3 } from "@madder/sdf-dsl";
+import type { SceneObject } from "../engine/scene-tree.js";
+import { extractSceneObjects, updateObjectTransform } from "../engine/scene-tree.js";
 import { exportToSTL, exportToOBJ, exportToGLB } from "../engine/exporter.js";
 
 export type MaterialTheme = "semantic" | "clay" | "chrome" | "hologram" | "gold" | "normal" | "wireframe";
+export type TransformMode = "translate" | "rotate" | "scale" | "orbit";
 
 interface ThreeViewportProps {
   geometry: THREE.BufferGeometry | null;
   objText?: string | null;
   loading?: boolean;
   meshStats?: { triangles: number; timeMs: number; resolution: number };
+  document?: SDFDocument;
+  selectedObjectId?: string | null;
+  onSelectObject?: (id: string | null) => void;
+  onUpdateDocument?: (doc: SDFDocument) => void;
+  transformMode?: TransformMode;
+  onTransformModeChange?: (mode: TransformMode) => void;
 }
 
 function ModelMesh({
@@ -129,12 +143,136 @@ function SceneLights() {
   );
 }
 
-export function ThreeViewport({ geometry, objText, loading, meshStats }: ThreeViewportProps) {
+/**
+ * 3D Interactive Transform Gizmo attached to active object position
+ */
+function ViewportTransformGizmo({
+  activeObject,
+  transformMode,
+  onTransformChange,
+  setIsDragging,
+}: {
+  activeObject: SceneObject | null;
+  transformMode: TransformMode;
+  onTransformChange: (t: { translate?: Vec3; rotate?: Vec3; scale?: Vec3 }) => void;
+  setIsDragging: (dragging: boolean) => void;
+}) {
+  const dummyMeshRef = useRef<THREE.Mesh>(null);
+  const gizmoRef = useRef<any>(null);
+
+  useEffect(() => {
+    if (dummyMeshRef.current && activeObject) {
+      dummyMeshRef.current.position.set(...activeObject.translate);
+      dummyMeshRef.current.rotation.set(
+        (activeObject.rotate[0] * Math.PI) / 180,
+        (activeObject.rotate[1] * Math.PI) / 180,
+        (activeObject.rotate[2] * Math.PI) / 180
+      );
+      dummyMeshRef.current.scale.set(...activeObject.scale);
+    }
+  }, [activeObject]);
+
+  if (!activeObject || transformMode === "orbit") return null;
+
+  return (
+    <>
+      <mesh ref={dummyMeshRef} position={activeObject.translate} visible={false}>
+        <boxGeometry args={[0.2, 0.2, 0.2]} />
+      </mesh>
+      {dummyMeshRef.current && (
+        <TransformControls
+          ref={gizmoRef}
+          object={dummyMeshRef.current}
+          mode={transformMode}
+          size={0.65}
+          space="world"
+          onMouseDown={() => setIsDragging(true)}
+          onMouseUp={() => {
+            setIsDragging(false);
+            if (dummyMeshRef.current) {
+              const pos = dummyMeshRef.current.position;
+              const rot = dummyMeshRef.current.rotation;
+              const sc = dummyMeshRef.current.scale;
+              onTransformChange({
+                translate: [
+                  Math.round(pos.x * 100) / 100,
+                  Math.round(pos.y * 100) / 100,
+                  Math.round(pos.z * 100) / 100,
+                ],
+                rotate: [
+                  Math.round((rot.x * 180) / Math.PI),
+                  Math.round((rot.y * 180) / Math.PI),
+                  Math.round((rot.z * 180) / Math.PI),
+                ],
+                scale: [
+                  Math.round(sc.x * 100) / 100,
+                  Math.round(sc.y * 100) / 100,
+                  Math.round(sc.z * 100) / 100,
+                ],
+              });
+            }
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+export function ThreeViewport({ 
+  geometry, 
+  objText, 
+  loading, 
+  meshStats,
+  document,
+  selectedObjectId,
+  onSelectObject,
+  onUpdateDocument,
+  transformMode: externalTransformMode,
+  onTransformModeChange,
+}: ThreeViewportProps) {
   const [materialTheme, setMaterialTheme] = useState<MaterialTheme>("semantic");
   const [wireframe, setWireframe] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [internalTransformMode, setInternalTransformMode] = useState<TransformMode>("translate");
+  const [isDraggingGizmo, setIsDraggingGizmo] = useState(false);
   const controlsRef = useRef<any>(null);
+
+  const activeTransformMode = externalTransformMode ?? internalTransformMode;
+
+  const setTransformMode = (mode: TransformMode) => {
+    if (onTransformModeChange) {
+      onTransformModeChange(mode);
+    } else {
+      setInternalTransformMode(mode);
+    }
+  };
+
+  const objects = useMemo(() => (document ? extractSceneObjects(document) : []), [document]);
+  const activeObject = objects.find((o) => o.id === selectedObjectId) || objects[0] || null;
+
+  // Keyboard shortcut listener for W, E, R, Q
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't trigger if typing in an input/textarea
+      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+
+      if (e.key === "w" || e.key === "W") setTransformMode("translate");
+      if (e.key === "e" || e.key === "E") setTransformMode("rotate");
+      if (e.key === "r" || e.key === "R") setTransformMode("scale");
+      if (e.key === "q" || e.key === "Q" || e.key === "Escape") setTransformMode("orbit");
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  const handleGizmoTransformChange = (t: { translate?: Vec3; rotate?: Vec3; scale?: Vec3 }) => {
+    if (!document || !activeObject || !onUpdateDocument) return;
+    const updated = updateObjectTransform(document, activeObject.id, t);
+    onUpdateDocument(updated);
+  };
 
   const resetCamera = () => {
     if (controlsRef.current) {
@@ -169,8 +307,15 @@ export function ThreeViewport({ geometry, objText, loading, meshStats }: ThreeVi
           fadeDistance={15}
           fadeStrength={1}
         />
+        <ViewportTransformGizmo
+          activeObject={activeObject}
+          transformMode={activeTransformMode}
+          onTransformChange={handleGizmoTransformChange}
+          setIsDragging={setIsDraggingGizmo}
+        />
         <OrbitControls
           ref={controlsRef}
+          enabled={!isDraggingGizmo}
           enableDamping
           dampingFactor={0.05}
           autoRotate={autoRotate}
@@ -180,8 +325,116 @@ export function ThreeViewport({ geometry, objText, loading, meshStats }: ThreeVi
         />
       </Canvas>
 
-      {/* Loading Overlay */}
-      {loading && (
+      {/* Top Part Quick-Select Bar */}
+      {objects.length > 0 && onSelectObject && (
+        <div
+          style={{
+            position: "absolute",
+            top: 14,
+            left: "50%",
+            transform: "translateX(-50%)",
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            background: "rgba(15, 23, 42, 0.75)",
+            backdropFilter: "blur(12px)",
+            padding: "4px 8px",
+            borderRadius: "var(--radius-lg)",
+            border: "1px solid rgba(255, 255, 255, 0.1)",
+            zIndex: 10,
+            maxWidth: "90%",
+            overflowX: "auto",
+          }}
+        >
+          <span style={{ fontSize: 11, fontWeight: 700, color: "var(--text-muted)", marginRight: 4, whiteSpace: "nowrap" }}>
+            PARTS:
+          </span>
+          {objects.map((obj) => {
+            const isSelected = activeObject?.id === obj.id;
+            return (
+              <button
+                key={obj.id}
+                onClick={() => onSelectObject(obj.id)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "4px 10px",
+                  borderRadius: "var(--radius-md)",
+                  background: isSelected ? "rgba(99, 102, 241, 0.3)" : "rgba(255, 255, 255, 0.05)",
+                  border: isSelected ? "1px solid rgba(99, 102, 241, 0.8)" : "1px solid rgba(255, 255, 255, 0.08)",
+                  color: isSelected ? "#ffffff" : "#94a3b8",
+                  fontSize: 11,
+                  fontWeight: isSelected ? 700 : 500,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                  transition: "all 0.15s ease",
+                }}
+              >
+                <div
+                  style={{
+                    width: 8,
+                    height: 8,
+                    borderRadius: "50%",
+                    background: obj.color || "#818cf8",
+                  }}
+                />
+                <span>{obj.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Floating 3D Transform Mode Switcher (Left Side) */}
+      <div
+        style={{
+          position: "absolute",
+          top: 14,
+          left: 14,
+          display: "flex",
+          flexDirection: "column",
+          gap: 4,
+          background: "rgba(15, 23, 42, 0.8)",
+          backdropFilter: "blur(12px)",
+          padding: 4,
+          borderRadius: "var(--radius-md)",
+          border: "1px solid rgba(255, 255, 255, 0.1)",
+          zIndex: 10,
+        }}
+      >
+        <button
+          onClick={() => setTransformMode("orbit")}
+          className={`btn btn-sm btn-icon ${activeTransformMode === "orbit" ? "btn-primary" : ""}`}
+          title="Orbit / View Mode (Q)"
+        >
+          <MousePointer size={14} />
+        </button>
+        <button
+          onClick={() => setTransformMode("translate")}
+          className={`btn btn-sm btn-icon ${activeTransformMode === "translate" ? "btn-primary" : ""}`}
+          title="Translate / Move Object (W)"
+        >
+          <Move size={14} />
+        </button>
+        <button
+          onClick={() => setTransformMode("rotate")}
+          className={`btn btn-sm btn-icon ${activeTransformMode === "rotate" ? "btn-primary" : ""}`}
+          title="Rotate Object (E)"
+        >
+          <RotateCw size={14} />
+        </button>
+        <button
+          onClick={() => setTransformMode("scale")}
+          className={`btn btn-sm btn-icon ${activeTransformMode === "scale" ? "btn-primary" : ""}`}
+          title="Scale Object (R)"
+        >
+          <Maximize2 size={14} />
+        </button>
+      </div>
+
+      {/* Loading Feedback: Subtle badge when updating, Full overlay on initial load */}
+      {loading && !geometry && (
         <div
           style={{
             position: "absolute",
@@ -198,12 +451,35 @@ export function ThreeViewport({ geometry, objText, loading, meshStats }: ThreeVi
         >
           <div className="animate-spin" style={{ width: 44, height: 44, border: "3px solid rgba(99, 102, 241, 0.2)", borderTopColor: "#6366f1", borderRadius: "50%" }} />
           <div style={{ fontSize: 14, fontWeight: 500, color: "#f8fafc" }}>
-            Computing Organic Surface & Vertex Colors...
+            Computing Organic Surface &amp; Vertex Colors...
           </div>
         </div>
       )}
 
-      {/* Floating Viewport Toolbars */}
+      {loading && geometry && (
+        <div
+          style={{
+            position: "absolute",
+            top: 14,
+            right: 14,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            background: "rgba(15, 23, 42, 0.85)",
+            backdropFilter: "blur(12px)",
+            padding: "6px 12px",
+            borderRadius: "var(--radius-md)",
+            border: "1px solid rgba(99, 102, 241, 0.4)",
+            zIndex: 15,
+            boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
+          }}
+        >
+          <div className="animate-spin" style={{ width: 14, height: 14, border: "2px solid rgba(99, 102, 241, 0.3)", borderTopColor: "#818cf8", borderRadius: "50%" }} />
+          <span style={{ fontSize: 11, fontWeight: 600, color: "#cbd5e1" }}>Updating 3D Mesh...</span>
+        </div>
+      )}
+
+      {/* Floating Viewport Toolbars (Bottom/Right) */}
       <div className="viewport-toolbar glass-panel" style={{ borderRadius: "var(--radius-lg)", padding: 6 }}>
         {/* Material Selector */}
         <select
@@ -260,66 +536,55 @@ export function ThreeViewport({ geometry, objText, loading, meshStats }: ThreeVi
               className="glass-panel"
               style={{
                 position: "absolute",
-                top: "110%",
+                bottom: "100%",
                 right: 0,
-                width: 160,
-                padding: 6,
+                marginBottom: 8,
                 borderRadius: "var(--radius-md)",
+                padding: 6,
                 display: "flex",
                 flexDirection: "column",
                 gap: 4,
-                zIndex: 30,
-                boxShadow: "var(--shadow-lg)",
+                width: 140,
+                zIndex: 20,
               }}
             >
               <button
-                className="btn btn-sm"
-                style={{ justifyContent: "flex-start" }}
                 onClick={() => {
-                  if (geometry) exportToSTL(geometry, "organic_model.stl");
+                  if (geometry) exportToSTL(geometry, "madder-model");
                   setShowExportMenu(false);
                 }}
+                disabled={!geometry}
+                className="btn btn-sm"
+                style={{ width: "100%", justifyContent: "flex-start" }}
               >
-                💾 STL (3D Print)
+                STL (.stl)
               </button>
               <button
-                className="btn btn-sm"
-                style={{ justifyContent: "flex-start" }}
                 onClick={() => {
-                  if (geometry) exportToOBJ(geometry, "organic_model.obj");
+                  if (geometry) exportToOBJ(geometry, "madder-model");
                   setShowExportMenu(false);
                 }}
+                disabled={!geometry}
+                className="btn btn-sm"
+                style={{ width: "100%", justifyContent: "flex-start" }}
               >
-                📄 OBJ Mesh
+                OBJ (.obj)
               </button>
               <button
-                className="btn btn-sm"
-                style={{ justifyContent: "flex-start" }}
                 onClick={() => {
-                  if (geometry) exportToGLB(geometry, "organic_model.glb");
+                  if (geometry) exportToGLB(geometry, "madder-model");
                   setShowExportMenu(false);
                 }}
+                disabled={!geometry}
+                className="btn btn-sm"
+                style={{ width: "100%", justifyContent: "flex-start" }}
               >
-                🌐 GLTF / GLB
+                GLB (.glb)
               </button>
             </div>
           )}
         </div>
       </div>
-
-      {/* Info Status Card */}
-      {meshStats && (
-        <div className="viewport-info-card glass-panel" style={{ borderRadius: "var(--radius-md)" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <Box size={14} color="#6366f1" />
-            <span>Triangles: <strong>{meshStats.triangles.toLocaleString()}</strong></span>
-          </div>
-          <div>•</div>
-          <div>Grid: <strong>{meshStats.resolution}³</strong></div>
-          <div>•</div>
-          <div>Time: <strong>{meshStats.timeMs.toFixed(0)} ms</strong></div>
-        </div>
-      )}
     </div>
   );
 }

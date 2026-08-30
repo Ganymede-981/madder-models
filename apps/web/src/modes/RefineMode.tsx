@@ -4,10 +4,13 @@ import {
   Sparkles, 
   RotateCcw, 
   RotateCw, 
-  AlertCircle
+  AlertCircle,
+  Sliders,
+  MessageSquare
 } from "lucide-react";
 import type { SDFDocument } from "@madder/sdf-dsl";
 import { PRESETS, validateSDFDocument } from "@madder/sdf-dsl";
+import { TransformControlsPanel } from "../components/TransformControlsPanel.js";
 
 interface Message {
   id: string;
@@ -23,6 +26,8 @@ interface RefineModeProps {
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
+  selectedObjectId?: string | null;
+  onSelectObject?: (id: string | null) => void;
 }
 
 const PROMPT_SUGGESTIONS = [
@@ -40,7 +45,10 @@ export function RefineMode({
   canRedo,
   onUndo,
   onRedo,
+  selectedObjectId = null,
+  onSelectObject = () => {},
 }: RefineModeProps) {
+  const [sidebarTab, setSidebarTab] = useState<"ai" | "transforms">("transforms");
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,7 +56,7 @@ export function RefineMode({
     {
       id: "welcome",
       sender: "assistant",
-      text: "👋 Welcome to Refine Mode. You have full organic control via AI-native Signed Distance Functions. Type a prompt like 'make it like a honeycomb pod with a curved dome' or pick a preset below!",
+      text: "👋 Welcome to Refine Mode! You can manipulate objects directly with Translate, Rotate & Scale in the Transforms tab, or describe changes with natural language.",
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     },
   ]);
@@ -70,7 +78,6 @@ export function RefineMode({
     setPrompt("");
 
     try {
-      // Call backend API which reads GROQ_API_KEY from .env
       const response = await fetch("/api/refine", {
         method: "POST",
         headers: {
@@ -105,17 +112,17 @@ export function RefineMode({
       const assistantMsg: Message = {
         id: String(Date.now() + 1),
         sender: "assistant",
-        text: `✨ Refined: ${validation.data.name || "Geometry updated"}! ${validation.data.description || "Applied smooth organic transformations."}`,
+        text: `✨ Successfully refined **${validation.data.name || "Model"}**!`,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
       setMessages((prev) => [...prev, assistantMsg]);
     } catch (err: any) {
       console.error(err);
-      setError(err.message || "Failed to refine model");
+      setError(err.message || "Failed to refine SDF document.");
       const errAssistantMsg: Message = {
         id: String(Date.now() + 1),
         sender: "assistant",
-        text: `⚠️ Error: ${err.message || "Failed to parse model."}`,
+        text: `⚠️ Error: ${err.message}`,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
       setMessages((prev) => [...prev, errAssistantMsg]);
@@ -138,20 +145,36 @@ export function RefineMode({
   };
 
   return (
-    <div className="sidebar-panel glass-panel" style={{ height: "100%", overflow: "hidden" }}>
-      {/* Top Bar: History & Preset Chips */}
+    <div className="sidebar-panel glass-panel" style={{ height: "100%", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+      {/* Top Bar: History & Tab Switcher */}
       <div
         style={{
-          padding: "12px 16px",
+          padding: "10px 14px",
           borderBottom: "1px solid var(--border-subtle)",
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
+          gap: 8,
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          <Sparkles size={16} color="#c084fc" />
-          <span style={{ fontSize: 13, fontWeight: 600 }}>Refine Studio</span>
+        {/* Tab Switcher */}
+        <div style={{ display: "flex", gap: 3, background: "rgba(0,0,0,0.3)", padding: 3, borderRadius: "var(--radius-md)" }}>
+          <button
+            onClick={() => setSidebarTab("transforms")}
+            className={`btn btn-sm ${sidebarTab === "transforms" ? "btn-primary" : ""}`}
+            style={{ fontSize: 11, padding: "4px 8px", gap: 5 }}
+          >
+            <Sliders size={13} />
+            <span>3D Transforms</span>
+          </button>
+          <button
+            onClick={() => setSidebarTab("ai")}
+            className={`btn btn-sm ${sidebarTab === "ai" ? "btn-primary" : ""}`}
+            style={{ fontSize: 11, padding: "4px 8px", gap: 5 }}
+          >
+            <MessageSquare size={13} />
+            <span>AI Sculptor</span>
+          </button>
         </div>
 
         {/* Undo / Redo */}
@@ -160,7 +183,7 @@ export function RefineMode({
             onClick={onUndo}
             disabled={!canUndo}
             className="btn btn-sm btn-icon"
-            title="Undo Refinement"
+            title="Undo (Ctrl+Z)"
           >
             <RotateCcw size={14} />
           </button>
@@ -168,155 +191,169 @@ export function RefineMode({
             onClick={onRedo}
             disabled={!canRedo}
             className="btn btn-sm btn-icon"
-            title="Redo Refinement"
+            title="Redo (Ctrl+Y)"
           >
             <RotateCw size={14} />
           </button>
         </div>
       </div>
 
-      {/* Preset Selector Bar */}
-      <div
-        style={{
-          padding: "10px 16px",
-          background: "rgba(0,0,0,0.2)",
-          borderBottom: "1px solid var(--border-subtle)",
-          display: "flex",
-          flexDirection: "column",
-          gap: 6,
-        }}
-      >
-        <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 500 }}>
-          ORGANIC PRESETS
+      {/* Main Content Area based on Active Tab */}
+      {sidebarTab === "transforms" ? (
+        <div style={{ flex: 1, overflowY: "auto", padding: 14 }}>
+          <TransformControlsPanel
+            document={currentDocument}
+            selectedObjectId={selectedObjectId}
+            onSelectObject={onSelectObject}
+            onUpdateDocument={onUpdateDocument}
+          />
         </div>
-        <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
-          <button
-            onClick={() => handleSelectPreset("honeycombHouse")}
-            className="btn btn-sm"
-            style={{ fontSize: 11, padding: "4px 8px", whiteSpace: "nowrap" }}
+      ) : (
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+          {/* Preset Selector Bar */}
+          <div
+            style={{
+              padding: "10px 14px",
+              background: "rgba(0,0,0,0.2)",
+              borderBottom: "1px solid var(--border-subtle)",
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}
           >
-            🐝 Honeycomb House
-          </button>
-          <button
-            onClick={() => handleSelectPreset("organicCoral")}
-            className="btn btn-sm"
-            style={{ fontSize: 11, padding: "4px 8px", whiteSpace: "nowrap" }}
-          >
-            🪸 Coral Reef
-          </button>
-          <button
-            onClick={() => handleSelectPreset("twistedSpire")}
-            className="btn btn-sm"
-            style={{ fontSize: 11, padding: "4px 8px", whiteSpace: "nowrap" }}
-          >
-            🌀 Twisted Spire
-          </button>
-          <button
-            onClick={() => handleSelectPreset("mushroomPod")}
-            className="btn btn-sm"
-            style={{ fontSize: 11, padding: "4px 8px", whiteSpace: "nowrap" }}
-          >
-            🍄 Mushroom Pod
-          </button>
-        </div>
-      </div>
-
-      {/* Chat Messages */}
-      <div className="chat-container">
-        <div className="messages-list">
-          {messages.map((m) => (
-            <div key={m.id} className={`message-bubble ${m.sender}`}>
-              <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
-              <div
-                style={{
-                  fontSize: 10,
-                  color: "rgba(255,255,255,0.4)",
-                  marginTop: 6,
-                  textAlign: m.sender === "user" ? "right" : "left",
-                }}
+            <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 500 }}>
+              ORGANIC PRESETS
+            </div>
+            <div style={{ display: "flex", gap: 6, overflowX: "auto", paddingBottom: 4 }}>
+              <button
+                onClick={() => handleSelectPreset("honeycombHouse")}
+                className="btn btn-sm"
+                style={{ fontSize: 11, padding: "4px 8px", whiteSpace: "nowrap" }}
               >
-                {m.timestamp}
+                🐝 Honeycomb
+              </button>
+              <button
+                onClick={() => handleSelectPreset("organicCoral")}
+                className="btn btn-sm"
+                style={{ fontSize: 11, padding: "4px 8px", whiteSpace: "nowrap" }}
+              >
+                🪸 Coral
+              </button>
+              <button
+                onClick={() => handleSelectPreset("twistedSpire")}
+                className="btn btn-sm"
+                style={{ fontSize: 11, padding: "4px 8px", whiteSpace: "nowrap" }}
+              >
+                🌀 Spire
+              </button>
+              <button
+                onClick={() => handleSelectPreset("mushroomPod")}
+                className="btn btn-sm"
+                style={{ fontSize: 11, padding: "4px 8px", whiteSpace: "nowrap" }}
+              >
+                🍄 Mushroom
+              </button>
+            </div>
+          </div>
+
+          {/* Chat Messages */}
+          <div className="chat-container" style={{ flex: 1, overflowY: "auto" }}>
+            <div className="messages-list">
+              {messages.map((m) => (
+                <div key={m.id} className={`message-bubble ${m.sender}`}>
+                  <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>
+                  <div
+                    style={{
+                      fontSize: 10,
+                      color: "rgba(255,255,255,0.4)",
+                      marginTop: 6,
+                      textAlign: m.sender === "user" ? "right" : "left",
+                    }}
+                  >
+                    {m.timestamp}
+                  </div>
+                </div>
+              ))}
+
+              {loading && (
+                <div className="message-bubble assistant animate-pulse-glow" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div className="animate-spin" style={{ width: 16, height: 16, border: "2px solid #6366f1", borderTopColor: "transparent", borderRadius: "50%" }} />
+                  <span style={{ fontSize: 13, color: "#a5b4fc" }}>AI sculpting SDF geometry with Groq...</span>
+                </div>
+              )}
+            </div>
+
+            {/* Suggestion Chips */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingTop: 4 }}>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 500 }}>
+                IDEAS &amp; REFINEMENTS
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {PROMPT_SUGGESTIONS.slice(0, 3).map((s, idx) => (
+                  <button
+                    key={idx}
+                    onClick={() => handleSubmitPrompt(s)}
+                    disabled={loading}
+                    className="btn btn-sm"
+                    style={{ fontSize: 11, padding: "4px 8px", background: "rgba(255,255,255,0.03)", textAlign: "left" }}
+                  >
+                    + {s}
+                  </button>
+                ))}
               </div>
             </div>
-          ))}
+          </div>
 
-          {loading && (
-            <div className="message-bubble assistant animate-pulse-glow" style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div className="animate-spin" style={{ width: 16, height: 16, border: "2px solid #6366f1", borderTopColor: "transparent", borderRadius: "50%" }} />
-              <span style={{ fontSize: 13, color: "#a5b4fc" }}>AI generating SDF-DSL mesh patch with Groq (.env)...</span>
+          {/* Error Alert */}
+          {error && (
+            <div
+              style={{
+                margin: "0 14px 8px 14px",
+                padding: "8px 12px",
+                background: "rgba(244, 63, 94, 0.15)",
+                border: "1px solid rgba(244, 63, 94, 0.3)",
+                borderRadius: "var(--radius-sm)",
+                color: "#fb7185",
+                fontSize: 12,
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+              }}
+            >
+              <AlertCircle size={14} />
+              <span>{error}</span>
             </div>
           )}
-        </div>
 
-        {/* Suggestion Chips */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 6, paddingTop: 4 }}>
-          <div style={{ fontSize: 11, color: "var(--text-muted)", fontWeight: 500 }}>
-            IDEAS & REFINEMENTS
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {PROMPT_SUGGESTIONS.slice(0, 3).map((s, idx) => (
-              <button
-                key={idx}
-                onClick={() => handleSubmitPrompt(s)}
+          {/* Input Prompt Box */}
+          <div className="prompt-input-wrapper">
+            <div className="prompt-input-box">
+              <textarea
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSubmitPrompt();
+                  }
+                }}
+                placeholder="Describe your organic refinement (e.g. 'add twisted arches to the front')..."
+                className="prompt-textarea"
+                rows={2}
                 disabled={loading}
-                className="btn btn-sm"
-                style={{ fontSize: 11, padding: "4px 8px", background: "rgba(255,255,255,0.03)", textAlign: "left" }}
+              />
+              <button
+                onClick={() => handleSubmitPrompt()}
+                disabled={loading || !prompt.trim()}
+                className="prompt-send-btn"
+                id="btn-refine-send"
               >
-                + {s}
+                <Send size={16} />
               </button>
-            ))}
+            </div>
           </div>
-        </div>
-      </div>
-
-      {/* Error Alert */}
-      {error && (
-        <div
-          style={{
-            margin: "0 16px 8px 16px",
-            padding: "8px 12px",
-            background: "rgba(244, 63, 94, 0.15)",
-            border: "1px solid rgba(244, 63, 94, 0.3)",
-            borderRadius: "var(--radius-sm)",
-            color: "#fb7185",
-            fontSize: 12,
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-          }}
-        >
-          <AlertCircle size={14} />
-          <span>{error}</span>
         </div>
       )}
-
-      {/* Input Prompt Box */}
-      <div className="prompt-input-wrapper">
-        <div className="prompt-input-box">
-          <textarea
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSubmitPrompt();
-              }
-            }}
-            placeholder="Describe your organic refinement (e.g. 'add twisted arches to the front')..."
-            className="prompt-textarea"
-            rows={2}
-            disabled={loading}
-          />
-          <button
-            onClick={() => handleSubmitPrompt()}
-            disabled={loading || !prompt.trim()}
-            className="prompt-send-btn"
-            id="btn-refine-send"
-          >
-            <Send size={16} />
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

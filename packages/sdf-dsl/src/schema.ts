@@ -201,6 +201,15 @@ export const SDFNodeSchema: z.ZodType<any> = z.lazy(() =>
       child: SDFNodeSchema,
       material: MaterialDefSchema.optional(),
     }),
+    // WS3.2 — hexShellCells first-class op
+    z.object({
+      op: z.literal("hexShellCells"),
+      shellThickness: z.number().positive(),
+      cellSize: z.number().positive(),
+      cellDepth: z.number().positive(),
+      child: SDFNodeSchema,
+      material: MaterialDefSchema.optional(),
+    }),
   ])
 );
 

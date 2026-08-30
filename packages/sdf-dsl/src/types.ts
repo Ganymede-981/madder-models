@@ -198,6 +198,17 @@ export interface OnionNode {
   material?: MaterialDef;
 }
 
+/** WS3.2 — First-class hex shell lattice op. Hollows a surface to shellThickness
+ *  and carves hex cells oriented along the local normal. */
+export interface HexShellCellsNode {
+  op: "hexShellCells";
+  shellThickness: number;
+  cellSize: number;
+  cellDepth: number;
+  child: SDFNode;
+  material?: MaterialDef;
+}
+
 export type SDFNode =
   | SphereNode
   | BoxNode
@@ -223,7 +234,8 @@ export type SDFNode =
   | DisplaceNode
   | ElongateNode
   | TransformNode
-  | OnionNode;
+  | OnionNode
+  | HexShellCellsNode;
 
 export interface SDFBounds {
   min: Vec3;
@@ -238,4 +250,53 @@ export interface SDFDocument {
   resolution?: number;
   material?: MaterialDef;
   root: SDFNode;
+}
+
+// ─── WS3.1 — 4-Layer Geometry Schema ───────────────────────────────────────────────────
+
+/**
+ * Typed per-part plan used by the Architect (Stage 1) to describe each semantic
+ * component. The Sculptor (Stage 2) converts this plan into an SDF sub-tree.
+ *
+ * Layer 1 — Hull:        Primary volume / silhouette primitive.
+ * Layer 2 — Deformations: Domain warps applied to the hull.
+ * Layer 3 — Cavities:    Carved negative space (windows, cells, pores).
+ * Layer 4 — Appendages:  Attached secondary features (fins, legs, chimneys).
+ */
+export interface PartGeometryPlan {
+  hull: { type: string; params: Record<string, number> };
+  deformations: {
+    type: "bend" | "twist" | "taper" | "ripple";
+    params: Record<string, number>;
+  }[];
+  cavities: {
+    type: string;
+    anchor: Vec3;
+    params: Record<string, number>;
+    requiresShell?: boolean; // hint to Sculptor to apply onion before carving
+  }[];
+  appendages: {
+    type: string;
+    anchor: Vec3;
+    count?: number;
+    params: Record<string, number>;
+  }[];
+}
+
+/** A single named semantic part within a multi-part scene blueprint. */
+export interface ScenePartBlueprint {
+  id: string;
+  name: string;
+  description: string;
+  anchor: Vec3;
+  scale?: Vec3 | number;
+  color: string;
+  geometryPlan: PartGeometryPlan;
+}
+
+/** Top-level scene blueprint produced by the Architect (Stage 1). */
+export interface SceneBlueprint {
+  sceneName: string;
+  description: string;
+  parts: ScenePartBlueprint[];
 }

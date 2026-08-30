@@ -1,8 +1,9 @@
 import type { SDFDocument, SDFNode, Vec3 } from "@madder/sdf-dsl";
-import { evaluateSDFWithMaterial, computeSDFNormal } from "./sdf-evaluator.js";
+import { evaluateSDFWithMaterial, computeSDFNormal, computeTightAABB, autoResolution } from "./sdf-evaluator.js";
 import { EDGE_TABLE, TRI_TABLE } from "./marching-cubes-tables.js";
 
 export interface WorkerInputMessage {
+  jobId?: number;
   docOrNode: SDFDocument | SDFNode;
   resolution?: number;
   bounds?: { min: Vec3; max: Vec3 };
@@ -10,22 +11,51 @@ export interface WorkerInputMessage {
 }
 
 export interface WorkerOutputMessage {
+  jobId?: number;
   positions: Float32Array;
   normals: Float32Array;
   colors: Float32Array;
   triangleCount: number;
   elapsedMs: number;
   resolution: number;
+  bounds: { min: Vec3; max: Vec3 };
+  wasUpscaled: boolean;
 }
 
 self.onmessage = (e: MessageEvent<WorkerInputMessage>) => {
   const start = performance.now();
-  const { docOrNode, resolution = 64, bounds = { min: [-3.5, -3.5, -3.5], max: [3.5, 3.5, 3.5] }, isoLevel = 0.0 } = e.data;
+  const { jobId, docOrNode, resolution = 64, bounds: inputBounds, isoLevel = 0.0 } = e.data;
   const rootNode: SDFNode = "version" in docOrNode ? docOrNode.root : docOrNode;
 
-  const N = resolution;
-  const min = bounds.min;
-  const max = bounds.max;
+  // WS1.2 — Auto-fit bounding box: compute tight AABB analytically, add 0.35-unit margin
+  const rawAABB = computeTightAABB(rootNode);
+  const isAABBValid = isFinite(rawAABB.min[0]) && isFinite(rawAABB.max[0]) && rawAABB.min[0] < 1e8 && rawAABB.max[0] > -1e8;
+  const MARGIN = 0.35;
+  const autoMin: Vec3 = isAABBValid
+    ? [
+        Math.max(rawAABB.min[0] - MARGIN, -8),
+        Math.max(rawAABB.min[1] - MARGIN, -8),
+        Math.max(rawAABB.min[2] - MARGIN, -8),
+      ]
+    : inputBounds?.min ?? [-3.5, -3.5, -3.5];
+  const autoMax: Vec3 = isAABBValid
+    ? [
+        Math.min(rawAABB.max[0] + MARGIN, 8),
+        Math.min(rawAABB.max[1] + MARGIN, 8),
+        Math.min(rawAABB.max[2] + MARGIN, 8),
+      ]
+    : inputBounds?.max ?? [3.5, 3.5, 3.5];
+  const effectiveBounds = { min: autoMin, max: autoMax };
+
+  // WS1.1 — Auto-raise resolution for thin features (≥ 2.5 voxels per feature, capped at 88)
+  const baseRes = Math.min(Math.max(resolution, 64), 72);
+  const { resolution: N, wasUpscaled } = autoResolution(rootNode, effectiveBounds, baseRes, 2.5, 88);
+  if (wasUpscaled) {
+    console.warn(`[MarchingCubes] Resolution auto-raised to ${N} to resolve thin features.`);
+  }
+
+  const min = effectiveBounds.min;
+  const max = effectiveBounds.max;
   const stepX = (max[0] - min[0]) / (N - 1);
   const stepY = (max[1] - min[1]) / (N - 1);
   const stepZ = (max[2] - min[2]) / (N - 1);
@@ -184,12 +214,15 @@ self.onmessage = (e: MessageEvent<WorkerInputMessage>) => {
   const elapsed = performance.now() - start;
 
   const output: WorkerOutputMessage = {
+    jobId,
     positions: posArray,
     normals: normArray,
     colors: colArray,
     triangleCount: positions.length / 3,
     elapsedMs: elapsed,
     resolution: N,
+    bounds: effectiveBounds,
+    wasUpscaled,
   };
 
   // Transfer memory buffers without cloning

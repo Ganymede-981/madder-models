@@ -1,6 +1,15 @@
 import { SDFDocumentSchema, SDFNodeSchema } from "./schema.js";
 import type { SDFDocument, SDFNode, Vec3, Vec2 } from "./types.js";
 
+// ─── Lint Warning / Error Types ───────────────────────────────────────────────
+export interface SDFLintIssue {
+  code: string;
+  severity: "warning" | "error";
+  message: string;
+  path?: string; // dot-separated path to the offending node
+}
+
+
 // Helper to coerce any value to a valid finite number with a fallback
 function toNum(val: unknown, fallback: number = 0): number {
   if (typeof val === "number" && !isNaN(val) && isFinite(val)) return val;
@@ -318,6 +327,17 @@ export function sanitizeSDFNode(node: any): SDFNode {
         material: mat,
       };
 
+    // WS3.2 — hexShellCells first-class op
+    case "hexShellCells":
+      return {
+        op: "hexShellCells",
+        shellThickness: Math.max(0.01, toNum(node.shellThickness, 0.1)),
+        cellSize: Math.max(0.05, toNum(node.cellSize, 0.3)),
+        cellDepth: Math.max(0.01, toNum(node.cellDepth, 0.15)),
+        child: sanitizeSDFNode(node.child),
+        material: mat,
+      } as any;
+
     default:
       // Graceful fallback for any unknown op: convert to smoothUnion or sphere
       if (node.children && Array.isArray(node.children)) {
@@ -378,4 +398,84 @@ export function validateSDFDocument(input: unknown): { success: boolean; data?: 
 export function validateSDFNode(input: unknown): { success: boolean; data?: SDFNode; error?: string } {
   const sanitized = sanitizeSDFNode(input);
   return { success: true, data: sanitized };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// WS1.4 + WS3.3 — Structural Lint Passes
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * WS1.4 — Modifier Nesting Lint:
+ * Flags any smoothUnion where one child is a domain-warp (twist/bend) and a
+ * sibling occupies a spatially overlapping region — the sibling should be
+ * nested inside the warp rather than placed as a peer.
+ *
+ * WS3.3 — CAVITY_WITHOUT_HOLLOW:
+ * Flags any subtraction / smoothSubtraction node (carving) that is not
+ * enclosed by an onion or hexShellCells ancestor. Cutting cells into a solid
+ * mass is almost always an authoring mistake for biomimetic/lattice shapes.
+ */
+export function lintSDFDocument(root: SDFNode, path = "root"): SDFLintIssue[] {
+  const issues: SDFLintIssue[] = [];
+
+  function walk(node: SDFNode, p: string, hasHollowAncestor: boolean): void {
+    if (!node || typeof node !== "object") return;
+
+    const isHollow = node.op === "onion" || (node as any).op === "hexShellCells";
+    const hollowCtx = hasHollowAncestor || isHollow;
+
+    // WS3.3 — Cavity-without-hollow check
+    if ((node.op === "subtraction" || node.op === "smoothSubtraction") && !hollowCtx) {
+      issues.push({
+        code: "CAVITY_WITHOUT_HOLLOW",
+        severity: "warning",
+        message:
+          `Carving op '${node.op}' at '${p}' is cutting into what appears to be a solid hull. ` +
+          "Wrap the surface with 'onion' (shell) or use 'hexShellCells' before carving to avoid " +
+          "tunnels through solid geometry.",
+        path: p,
+      });
+    }
+
+    // WS1.4 — Modifier nesting lint on smoothUnion children
+    if (node.op === "smoothUnion" && Array.isArray(node.children)) {
+      const twistBendIdx = node.children.findIndex(
+        (ch: SDFNode) => ch.op === "twist" || ch.op === "bend"
+      );
+      if (twistBendIdx !== -1 && node.children.length > 1) {
+        const warpNode = node.children[twistBendIdx];
+        const siblings = node.children.filter((_, i) => i !== twistBendIdx);
+        // Warn if siblings exist — they may need to be inside the warp
+        const siblingOps = siblings.map((s: SDFNode) => s.op).join(", ");
+        issues.push({
+          code: "MODIFIER_NESTING",
+          severity: "warning",
+          message:
+            `smoothUnion at '${p}' has a '${warpNode.op}' child and ${siblings.length} sibling(s) [${siblingOps}]. ` +
+            "Features that are conceptually part of the warped shape (e.g. windows on a twisted spire) " +
+            "should be nested inside the '" + warpNode.op + "' node, not placed as siblings.",
+          path: p,
+        });
+      }
+    }
+
+    // Recurse
+    if ("children" in node && Array.isArray((node as any).children)) {
+      (node as any).children.forEach((ch: SDFNode, i: number) =>
+        walk(ch, `${p}.children[${i}]`, hollowCtx)
+      );
+    }
+    if ("child" in node && (node as any).child) {
+      walk((node as any).child, `${p}.child`, hollowCtx);
+    }
+    if ("a" in node && (node as any).a) {
+      walk((node as any).a, `${p}.a`, hollowCtx);
+    }
+    if ("b" in node && (node as any).b && typeof (node as any).b === "object" && "op" in (node as any).b) {
+      walk((node as any).b, `${p}.b`, hollowCtx);
+    }
+  }
+
+  walk(root, path, false);
+  return issues;
 }
