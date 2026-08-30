@@ -110,7 +110,7 @@ export function extractSceneObjects(doc: SDFDocument): SceneObject[] {
 
   // If root is a combiner (smoothUnion / union), each child is a distinct scene object
   if ((root.op === "smoothUnion" || root.op === "union") && Array.isArray(root.children)) {
-    root.children.forEach((child, index) => {
+    root.children.forEach((child: SDFNode, index: number) => {
       objects.push(extractTransform(child, `root.children[${index}]`, index));
     });
   } else {
