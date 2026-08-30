@@ -14,7 +14,12 @@
     "strict": true,
     "noUnusedLocals": false,
     "noUnusedParameters": false,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "baseUrl": ".",
+    "paths": {
+      "@madder/sdf-dsl": ["../../packages/sdf-dsl/src/index.ts"],
+      "@madder/sdf-dsl/*": ["../../packages/sdf-dsl/src/*"]
+    }
   },
-  "include": ["src"]
+  "include": ["src", "../../packages/sdf-dsl/src"]
 }
