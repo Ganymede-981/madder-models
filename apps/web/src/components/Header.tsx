@@ -1,16 +1,18 @@
 import React from "react";
-import { Sparkles, Wand2, Code } from "lucide-react";
+import { Sparkles, Plus, History, Code, Settings } from "lucide-react";
 
 interface HeaderProps {
-  activeMode: "create" | "refine";
-  setActiveMode: (mode: "create" | "refine") => void;
+  onNewModel: () => void;
+  onOpenHistory: () => void;
   onOpenJsonEditor: () => void;
+  sessionCount?: number;
 }
 
 export function Header({
-  activeMode,
-  setActiveMode,
+  onNewModel,
+  onOpenHistory,
   onOpenJsonEditor,
+  sessionCount = 0,
 }: HeaderProps) {
   return (
     <header className="app-header glass-panel">
@@ -35,29 +37,44 @@ export function Header({
             MADDER <span className="text-gradient">MODELS</span>
           </div>
           <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: -2 }}>
-            Organic AI-Native 3D Studio
+            Conversational AI 3D Sculptor Studio
           </div>
         </div>
       </div>
 
-      {/* Mode Switcher */}
-      <div className="mode-switcher">
+      {/* Center Actions */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <button
-          className={`mode-tab ${activeMode === "create" ? "active generate" : ""}`}
-          onClick={() => setActiveMode("create")}
-          id="mode-tab-create"
+          className="btn btn-primary"
+          onClick={onNewModel}
+          id="btn-header-new-model"
+          style={{ padding: "7px 14px", gap: 6 }}
         >
-          <Wand2 size={16} />
-          <span>Create (From Scratch)</span>
+          <Plus size={15} />
+          <span>New 3D Model</span>
         </button>
 
         <button
-          className={`mode-tab ${activeMode === "refine" ? "active refine" : ""}`}
-          onClick={() => setActiveMode("refine")}
-          id="mode-tab-refine"
+          className="btn"
+          onClick={onOpenHistory}
+          id="btn-header-history"
+          style={{ padding: "7px 12px", gap: 6 }}
+          title="Past Chat Sessions"
         >
-          <Sparkles size={16} />
-          <span>Refine (Sculpt & Modify)</span>
+          <History size={15} />
+          <span>Sessions</span>
+          {sessionCount > 0 && (
+            <span
+              style={{
+                fontSize: 10,
+                background: "rgba(255,255,255,0.15)",
+                padding: "1px 6px",
+                borderRadius: "var(--radius-full)",
+              }}
+            >
+              {sessionCount}
+            </span>
+          )}
         </button>
       </div>
 

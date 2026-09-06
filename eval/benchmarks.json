@@ -34,5 +34,29 @@
     "category": "Architecture",
     "prompt": "The Pyramids of Giza with three stepped pyramid monuments, golden pyramidion caps, and a desert sandstone ground plane.",
     "expected_features": ["multiple pyramid structures", "gold caps", "ground plane", "spatial layout"]
+  },
+  {
+    "id": "bench_07_rotational_flanged_urn",
+    "category": "Mechanical",
+    "prompt": "A flanged rotational vase urn with flared circular lip, ribbed cylindrical core, radial bolt rings, and a weighted circular pedestal.",
+    "expected_features": ["rotational symmetry", "radial bolt rings", "flared lip", "pedestal base"]
+  },
+  {
+    "id": "bench_08_gothic_citadel",
+    "category": "Architecture",
+    "prompt": "A multi-tiered gothic citadel fortress with central high keep, four corner watchtowers, arched rampart walls, and dark obsidian spires.",
+    "expected_features": ["multi-tiered composition", "corner towers", "central keep", "arched ramparts"]
+  },
+  {
+    "id": "bench_09_biomorphic_lattice_cage",
+    "category": "Lattice",
+    "prompt": "An organic biomimetic egg cage with hollow cellular lattice shell, smooth flowing negative space pores, and a glowing suspended internal core.",
+    "expected_features": ["hollow shell", "negative space lattice", "suspended core", "onion deformation"]
+  },
+  {
+    "id": "bench_10_robotic_dragonfly",
+    "category": "Creature",
+    "prompt": "A cybernetic dragonfly organism with elongated segmented abdomen, dual pairs of translucent thin wings, faceted head eyes, and slender legs.",
+    "expected_features": ["elongated abdomen", "dual thin wings", "faceted head", "slender appendages"]
   }
 ]

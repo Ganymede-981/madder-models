@@ -14,13 +14,14 @@ load_dotenv(dotenv_path=ENV_PATH, override=True)
 from eval.renderer import render_sdf_snapshot
 from eval.judge import evaluate_with_glm_judge, JudgeEvaluation
 from eval.dataset import BenchmarkItem, load_benchmarks
+from eval.critic_loop import run_critic_loop
 
 DEFAULT_EXPERIMENT_NAME = "Madder-Models-SDF-Eval"
 
 class MLflowEvalPipeline:
     """
     MLflow-driven evaluation pipeline for Madder Models SDF-DSL and rendered 3D geometry.
-    Uses GLM-4.6V-Flash (or GLM vision models) as a multimodal LLM-as-a-judge.
+    Uses dual LLM-as-a-judge and VLM visual critique.
     """
 
     def __init__(
@@ -29,16 +30,20 @@ class MLflowEvalPipeline:
         judge_model: str = os.getenv("JUDGE_MODEL", "gemini-3.5-flash-lite"),
         generator_model: str = "qwen/qwen3.6-27b",
         artifacts_dir: Optional[str] = None,
+        use_critic_loop: bool = False,
+        max_rounds: int = 3,
     ):
         self.experiment_name = experiment_name
         self.judge_model = judge_model
         self.generator_model = generator_model
         self.artifacts_dir = artifacts_dir or os.path.join(os.path.dirname(__file__), "eval_artifacts")
+        self.use_critic_loop = use_critic_loop
+        self.max_rounds = max_rounds
         os.makedirs(self.artifacts_dir, exist_ok=True)
 
         # Initialize MLflow experiment
         mlflow.set_experiment(self.experiment_name)
-        print(f"[MLflow] Active Experiment: '{self.experiment_name}'")
+        print(f"[MLflow] Active Experiment: '{self.experiment_name}' (Critic Loop: {self.use_critic_loop})")
 
     def evaluate_sample(
         self,
@@ -63,14 +68,32 @@ class MLflowEvalPipeline:
         print(f"[*] Judge Model: '{self.judge_model}'")
         print(f"=======================================================")
 
-        # 1. Render 3D snapshot image if not provided
-        sample_img_path = image_path
+        critic_result = None
+        if self.use_critic_loop:
+            from groq import Groq
+            groq_key = os.getenv("GROQ_API_KEY", "")
+            if groq_key:
+                client = Groq(api_key=groq_key)
+                print(f"[*] Executing Critic Loop for '{prompt[:40]}' (max {self.max_rounds} rounds)...")
+                critic_result = run_critic_loop(
+                    client=client,
+                    prompt=prompt,
+                    initial_sdf=sdf_document,
+                    max_rounds=self.max_rounds,
+                    artifacts_dir=self.artifacts_dir,
+                    session_prefix=s_id,
+                )
+                sdf_document = critic_result.final_document
+                if critic_result.last_image_path and os.path.exists(critic_result.last_image_path):
+                    sample_img_path = critic_result.last_image_path
+
+        # 1. Render 3D snapshot image if not provided or updated
         if not sample_img_path or not os.path.exists(sample_img_path):
             sample_img_path = os.path.join(self.artifacts_dir, f"{s_id}_render.png")
             print(f"[*] Rendering 3D snapshot to '{sample_img_path}'...")
             render_sdf_snapshot(sdf_document, output_path=sample_img_path, width=480, height=480)
 
-        # 2. Query Multimodal LLM Judge (GLM-4.6V-Flash)
+        # 2. Query Multimodal LLM Judge (GLM-4.6V-Flash / Gemini)
         print(f"[*] Invoking Multimodal Judge ({self.judge_model})...")
         judge_result: JudgeEvaluation = evaluate_with_glm_judge(
             prompt=prompt,
@@ -99,8 +122,7 @@ class MLflowEvalPipeline:
         with mlflow.start_run(run_name=r_name) as run:
             run_id = run.info.run_id
 
-            # Parameters
-            mlflow.log_params({
+            params_to_log = {
                 "sample_id": s_id,
                 "prompt": prompt[:250],
                 "category": category,
@@ -109,18 +131,31 @@ class MLflowEvalPipeline:
                 "model_name": sdf_document.get("name", "Untitled"),
                 "sdf_resolution": sdf_document.get("resolution", 72),
                 "has_blueprint": bool(sdf_document.get("_blueprint")),
+                "use_critic_loop": self.use_critic_loop,
                 **(generator_info or {}),
-            })
+            }
+            if critic_result:
+                params_to_log["critic_total_rounds"] = critic_result.total_rounds
+                params_to_log["critic_final_score"] = critic_result.final_score
+            mlflow.log_params(params_to_log)
 
-            # Metrics
-            mlflow.log_metrics({
+            metrics_to_log = {
                 "prompt_alignment": judge_result.prompt_alignment,
                 "geometric_fidelity": judge_result.geometric_fidelity,
                 "organic_quality": judge_result.organic_quality,
                 "sdf_code_elegance": judge_result.sdf_code_elegance,
                 "color_harmony": judge_result.color_harmony,
                 "overall_score": judge_result.overall_score,
-            })
+            }
+            if critic_result:
+                metrics_to_log["critic_final_score"] = critic_result.final_score
+                metrics_to_log["critic_rounds"] = float(critic_result.total_rounds)
+                for r_info in critic_result.round_scores:
+                    r_num = r_info["round"]
+                    metrics_to_log[f"round_{r_num}_code_score"] = float(r_info["code_score"])
+                    metrics_to_log[f"round_{r_num}_visual_score"] = float(r_info["visual_score"])
+                    metrics_to_log[f"round_{r_num}_composite_score"] = float(r_info["composite_score"])
+            mlflow.log_metrics(metrics_to_log)
 
             # Artifacts (Rendered 3D Image, SDF JSON, Markdown Report, Critique JSON)
             mlflow.log_artifact(sample_img_path, artifact_path="rendered_visuals")

@@ -25,27 +25,34 @@ export interface WorkerOutputMessage {
 self.onmessage = (e: MessageEvent<WorkerInputMessage>) => {
   const start = performance.now();
   const { jobId, docOrNode, resolution = 64, bounds: inputBounds, isoLevel = 0.0 } = e.data;
-  const rootNode: SDFNode = "version" in docOrNode ? docOrNode.root : docOrNode;
+  
+  try {
+    if (!docOrNode) {
+      throw new Error("No SDF Document provided to worker");
+    }
+    const rootNode: SDFNode = typeof docOrNode === "object" && "root" in docOrNode && (docOrNode as any).root
+      ? (docOrNode as any).root
+      : (docOrNode as SDFNode);
 
-  // WS1.2 — Auto-fit bounding box: compute tight AABB analytically, add 0.35-unit margin
-  const rawAABB = computeTightAABB(rootNode);
-  const isAABBValid = isFinite(rawAABB.min[0]) && isFinite(rawAABB.max[0]) && rawAABB.min[0] < 1e8 && rawAABB.max[0] > -1e8;
-  const MARGIN = 0.35;
-  const autoMin: Vec3 = isAABBValid
-    ? [
-        Math.max(rawAABB.min[0] - MARGIN, -8),
-        Math.max(rawAABB.min[1] - MARGIN, -8),
-        Math.max(rawAABB.min[2] - MARGIN, -8),
-      ]
-    : inputBounds?.min ?? [-3.5, -3.5, -3.5];
-  const autoMax: Vec3 = isAABBValid
-    ? [
-        Math.min(rawAABB.max[0] + MARGIN, 8),
-        Math.min(rawAABB.max[1] + MARGIN, 8),
-        Math.min(rawAABB.max[2] + MARGIN, 8),
-      ]
-    : inputBounds?.max ?? [3.5, 3.5, 3.5];
-  const effectiveBounds = { min: autoMin, max: autoMax };
+    // WS1.2 — Auto-fit bounding box: compute tight AABB analytically, add 0.35-unit margin
+    const rawAABB = computeTightAABB(rootNode);
+    const isAABBValid = isFinite(rawAABB.min[0]) && isFinite(rawAABB.max[0]) && rawAABB.min[0] < 1e8 && rawAABB.max[0] > -1e8;
+    const MARGIN = 0.35;
+    const autoMin: Vec3 = isAABBValid
+      ? [
+          Math.max(rawAABB.min[0] - MARGIN, -8),
+          Math.max(rawAABB.min[1] - MARGIN, -8),
+          Math.max(rawAABB.min[2] - MARGIN, -8),
+        ]
+      : inputBounds?.min ?? [-3.5, -3.5, -3.5];
+    const autoMax: Vec3 = isAABBValid
+      ? [
+          Math.min(rawAABB.max[0] + MARGIN, 8),
+          Math.min(rawAABB.max[1] + MARGIN, 8),
+          Math.min(rawAABB.max[2] + MARGIN, 8),
+        ]
+      : inputBounds?.max ?? [3.5, 3.5, 3.5];
+    const effectiveBounds = { min: autoMin, max: autoMax };
 
   // WS1.1 — Auto-raise resolution for thin features (≥ 2.5 voxels per feature, capped at 88)
   const baseRes = Math.min(Math.max(resolution, 64), 72);
@@ -218,7 +225,7 @@ self.onmessage = (e: MessageEvent<WorkerInputMessage>) => {
     positions: posArray,
     normals: normArray,
     colors: colArray,
-    triangleCount: positions.length / 3,
+    triangleCount: Math.floor(positions.length / 9),
     elapsedMs: elapsed,
     resolution: N,
     bounds: effectiveBounds,
@@ -227,4 +234,20 @@ self.onmessage = (e: MessageEvent<WorkerInputMessage>) => {
 
   // Transfer memory buffers without cloning
   self.postMessage(output, [posArray.buffer, normArray.buffer, colArray.buffer] as any);
+} catch (err: any) {
+  console.error("[MarchingCubesWorker] Fatal evaluation error:", err);
+  // Post safe fallback geometry so main thread is never blocked
+  const fallbackOutput: WorkerOutputMessage = {
+    jobId,
+    positions: new Float32Array(0),
+    normals: new Float32Array(0),
+    colors: new Float32Array(0),
+    triangleCount: 0,
+    elapsedMs: performance.now() - start,
+    resolution: 32,
+    bounds: { min: [-3.5, -3.5, -3.5], max: [3.5, 3.5, 3.5] },
+    wasUpscaled: false,
+  };
+  self.postMessage(fallbackOutput);
+}
 };

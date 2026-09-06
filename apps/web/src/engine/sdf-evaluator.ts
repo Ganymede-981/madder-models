@@ -1,33 +1,62 @@
 import * as THREE from "three";
 import type { SDFNode, Vec3, MaterialDef, ColorValue } from "@madder/sdf-dsl";
 
-// Vector Math Helpers
+// Defensive Vector & Number Parsing Helpers
+export function asVec3(val: any, defaultVal: Vec3 = [0, 0, 0]): Vec3 {
+  if (Array.isArray(val)) {
+    const x = typeof val[0] === "number" && !isNaN(val[0]) ? val[0] : defaultVal[0];
+    const y = typeof val[1] === "number" && !isNaN(val[1]) ? val[1] : defaultVal[1];
+    const z = typeof val[2] === "number" && !isNaN(val[2]) ? val[2] : defaultVal[2];
+    return [x, y, z];
+  }
+  if (typeof val === "number" && !isNaN(val)) {
+    return [val, val, val];
+  }
+  return [...defaultVal];
+}
+
+export function asNumber(val: any, defaultVal: number = 0): number {
+  return typeof val === "number" && !isNaN(val) ? val : defaultVal;
+}
+
+// Vector Math Helpers (guaranteed NaN-free)
 function vSub(a: Vec3, b: Vec3): Vec3 {
-  return [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const sa = asVec3(a);
+  const sb = asVec3(b);
+  return [sa[0] - sb[0], sa[1] - sb[1], sa[2] - sb[2]];
 }
 
 function vAdd(a: Vec3, b: Vec3): Vec3 {
-  return [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+  const sa = asVec3(a);
+  const sb = asVec3(b);
+  return [sa[0] + sb[0], sa[1] + sb[1], sa[2] + sb[2]];
 }
 
 function vLength(v: Vec3): number {
-  return Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+  const sv = asVec3(v);
+  return Math.sqrt(sv[0] * sv[0] + sv[1] * sv[1] + sv[2] * sv[2]);
 }
 
 function vDot(a: Vec3, b: Vec3): number {
-  return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const sa = asVec3(a);
+  const sb = asVec3(b);
+  return sa[0] * sb[0] + sa[1] * sb[1] + sa[2] * sb[2];
 }
 
 function vMax(a: Vec3, b: Vec3): Vec3 {
-  return [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.max(a[2], b[2])];
+  const sa = asVec3(a);
+  const sb = asVec3(b);
+  return [Math.max(sa[0], sb[0]), Math.max(sa[1], sb[1]), Math.max(sa[2], sb[2])];
 }
 
 function vMin(a: Vec3, b: Vec3): Vec3 {
-  return [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.min(a[2], b[2])];
+  const sa = asVec3(a);
+  const sb = asVec3(b);
+  return [Math.min(sa[0], sb[0]), Math.min(sa[1], sb[1]), Math.min(sa[2], sb[2])];
 }
 
 export function clamp(val: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, val));
+  return Math.max(min, Math.min(max, isNaN(val) ? min : val));
 }
 
 // Universal Natural Language & CSS Color Dictionary for fuzzy fallbacks
@@ -186,13 +215,31 @@ export function sdCapsule(p: Vec3, a: Vec3, b: Vec3, radius: number): number {
 }
 
 export function sdCone(p: Vec3, radius: number, height: number): number {
-  const q = Math.sqrt(p[0] * p[0] + p[2] * p[2]);
-  const len = Math.sqrt(radius * radius + height * height);
-  const sinA = radius / len;
-  const cosA = height / len;
-  const k = sinA / cosA;
-  const cb = [q - k * clamp(q / k, 0, height), p[1] - clamp(p[1], -height / 2, height / 2)];
-  return Math.sqrt(cb[0] * cb[0] + cb[1] * cb[1]) * Math.sign(p[1]);
+  const qx = Math.sqrt(p[0] * p[0] + p[2] * p[2]);
+  const qy = p[1];
+
+  // Slanted side from tip (0, h/2) to base (r, -h/2)
+  const ex = radius;
+  const ey = -height;
+  const eLenSq = ex * ex + ey * ey + 1e-8;
+
+  const wx = qx;
+  const wy = qy - 0.5 * height;
+  const hProj = clamp((wx * ex + wy * ey) / eLenSq, 0, 1);
+  const bx = wx - ex * hProj;
+  const by = wy - ey * hProj;
+  const dSide = Math.sqrt(bx * bx + by * by);
+
+  // Flat base cap at y = -0.5*h, radius <= r
+  const baseProjX = clamp(qx, 0, radius);
+  const diffBaseX = qx - baseProjX;
+  const diffBaseY = qy - (-0.5 * height);
+  const dBase = Math.sqrt(diffBaseX * diffBaseX + diffBaseY * diffBaseY);
+
+  const d = Math.min(dSide, dBase);
+  const rAtY = Math.max(0, (radius * (0.5 * height - qy)) / Math.max(height, 1e-6));
+  const isInside = qy <= 0.5 * height && qy >= -0.5 * height && qx <= rAtY;
+  return isInside ? -d : d;
 }
 
 export function sdHexPrism(p: Vec3, radius: number, height: number, rounding: number = 0): number {
@@ -259,6 +306,8 @@ export interface AABB {
 const INF = 1e9;
 const EMPTY_AABB: AABB = { min: [INF, INF, INF], max: [-INF, -INF, -INF] };
 const INFINITE_AABB: AABB = { min: [-INF, -INF, -INF], max: [INF, INF, INF] };
+const DEFAULT_AABB: AABB = { min: [-2, -2, -2], max: [2, 2, 2] };
+const DEFAULT_UNIT_AABB: AABB = { min: [-1, -1, -1], max: [1, 1, 1] };
 
 function mergeAABB(a: AABB, b: AABB): AABB {
   return { min: vMin(a.min, b.min), max: vMax(a.max, b.max) };
@@ -271,130 +320,121 @@ function expandAABB(aabb: AABB, margin: number): AABB {
   };
 }
 
-export function computeTightAABB(node: SDFNode): AABB {
-  switch (node.op) {
+export function computeTightAABB(node: any): AABB {
+  if (!node || typeof node !== "object") {
+    return DEFAULT_AABB;
+  }
+  const op = node.op || "sphere";
+  switch (op) {
     case "sphere": {
-      const c = node.center || [0, 0, 0];
-      const r = node.radius;
-      return { min: [c[0]-r, c[1]-r, c[2]-r], max: [c[0]+r, c[1]+r, c[2]+r] };
+      const c = asVec3(node.center, [0, 0, 0]);
+      const r = asNumber(node.radius, 1.0);
+      return { min: [c[0] - r, c[1] - r, c[2] - r], max: [c[0] + r, c[1] + r, c[2] + r] };
     }
     case "box": {
-      const c = node.center || [0, 0, 0];
-      const hw = node.size[0] / 2;
-      const hh = node.size[1] / 2;
-      const hd = node.size[2] / 2;
-      return {
-        min: [c[0]-hw, c[1]-hh, c[2]-hd],
-        max: [c[0]+hw, c[1]+hh, c[2]+hd],
-      };
+      const c = asVec3(node.center, [0, 0, 0]);
+      const s = asVec3(node.size, [1, 1, 1]);
+      const hw = s[0] / 2;
+      const hh = s[1] / 2;
+      const hd = s[2] / 2;
+      return { min: [c[0] - hw, c[1] - hh, c[2] - hd], max: [c[0] + hw, c[1] + hh, c[2] + hd] };
     }
     case "cylinder": {
-      const c = node.center || [0, 0, 0];
-      const r = node.radius;
-      const hh = node.height / 2;
-      return {
-        min: [c[0]-r, c[1]-hh, c[2]-r],
-        max: [c[0]+r, c[1]+hh, c[2]+r],
-      };
+      const c = asVec3(node.center, [0, 0, 0]);
+      const r = asNumber(node.radius, 0.5);
+      const hh = asNumber(node.height, 1.0) / 2;
+      return { min: [c[0] - r, c[1] - hh, c[2] - r], max: [c[0] + r, c[1] + hh, c[2] + r] };
     }
     case "torus": {
-      const c = node.center || [0, 0, 0];
-      const outer = node.majorRadius + node.minorRadius;
-      return {
-        min: [c[0]-outer, c[1]-node.minorRadius, c[2]-outer],
-        max: [c[0]+outer, c[1]+node.minorRadius, c[2]+outer],
-      };
+      const c = asVec3(node.center, [0, 0, 0]);
+      const R = asNumber(node.majorRadius, 1.0);
+      const r = asNumber(node.minorRadius, 0.25);
+      const outer = R + r;
+      return { min: [c[0] - outer, c[1] - r, c[2] - outer], max: [c[0] + outer, c[1] + r, c[2] + outer] };
     }
     case "capsule": {
-      const r = node.radius;
+      const a = asVec3(node.a, [0, -0.5, 0]);
+      const b = asVec3(node.b, [0, 0.5, 0]);
+      const r = asNumber(node.radius, 0.25);
       return {
-        min: [Math.min(node.a[0],node.b[0])-r, Math.min(node.a[1],node.b[1])-r, Math.min(node.a[2],node.b[2])-r],
-        max: [Math.max(node.a[0],node.b[0])+r, Math.max(node.a[1],node.b[1])+r, Math.max(node.a[2],node.b[2])+r],
+        min: [Math.min(a[0], b[0]) - r, Math.min(a[1], b[1]) - r, Math.min(a[2], b[2]) - r],
+        max: [Math.max(a[0], b[0]) + r, Math.max(a[1], b[1]) + r, Math.max(a[2], b[2]) + r],
       };
     }
     case "cone": {
-      const c = node.center || [0, 0, 0];
-      const r = node.radius;
-      const hh = node.height / 2;
-      return {
-        min: [c[0]-r, c[1]-hh, c[2]-r],
-        max: [c[0]+r, c[1]+hh, c[2]+r],
-      };
+      const c = asVec3(node.center, [0, 0, 0]);
+      const r = asNumber(node.radius, 0.5);
+      const hh = asNumber(node.height, 1.0) / 2;
+      return { min: [c[0] - r, c[1] - hh, c[2] - r], max: [c[0] + r, c[1] + hh, c[2] + r] };
     }
     case "hexPrism": {
-      const c = node.center || [0, 0, 0];
-      const r = node.radius;
-      const hh = node.height / 2;
-      return {
-        min: [c[0]-r, c[1]-hh, c[2]-r],
-        max: [c[0]+r, c[1]+hh, c[2]+r],
-      };
+      const c = asVec3(node.center, [0, 0, 0]);
+      const r = asNumber(node.radius, 0.5);
+      const hh = asNumber(node.height, 1.0) / 2;
+      return { min: [c[0] - r, c[1] - hh, c[2] - r], max: [c[0] + r, c[1] + hh, c[2] + r] };
     }
     case "ellipsoid": {
-      const c = node.center || [0, 0, 0];
-      return {
-        min: [c[0]-node.radii[0], c[1]-node.radii[1], c[2]-node.radii[2]],
-        max: [c[0]+node.radii[0], c[1]+node.radii[1], c[2]+node.radii[2]],
-      };
+      const c = asVec3(node.center, [0, 0, 0]);
+      const r = asVec3(node.radii, [1, 1, 1]);
+      return { min: [c[0] - r[0], c[1] - r[1], c[2] - r[2]], max: [c[0] + r[0], c[1] + r[1], c[2] + r[2]] };
     }
     case "pyramid": {
-      const c = node.center || [0, 0, 0];
-      const hw = node.baseSize[0] / 2;
-      const hd = node.baseSize[1] / 2;
-      return {
-        min: [c[0]-hw, c[1]-node.height/2, c[2]-hd],
-        max: [c[0]+hw, c[1]+node.height/2, c[2]+hd],
-      };
+      const c = asVec3(node.center, [0, 0, 0]);
+      const base = asVec3(node.baseSize, [1, 1, 1]);
+      const h = asNumber(node.height, 1.0);
+      return { min: [c[0] - base[0] / 2, c[1] - h / 2, c[2] - base[1] / 2], max: [c[0] + base[0] / 2, c[1] + h / 2, c[2] + base[1] / 2] };
     }
     // Combiners — union of children AABBs
     case "union":
     case "smoothUnion": {
-      return (node.children || []).reduce<AABB>((acc: AABB, ch: SDFNode) => mergeAABB(acc, computeTightAABB(ch)), EMPTY_AABB);
+      const children: any[] = Array.isArray(node.children) ? node.children : [];
+      if (children.length === 0) return DEFAULT_AABB;
+      let acc = EMPTY_AABB;
+      for (const ch of children) {
+        acc = mergeAABB(acc, computeTightAABB(ch));
+      }
+      return acc;
     }
     case "intersection":
     case "smoothIntersection": {
-      // Intersection can only be smaller than each child — use first child as over-estimate
-      return computeTightAABB(node.children[0]);
+      const ch = Array.isArray(node.children) && node.children[0] ? node.children[0] : null;
+      return ch ? computeTightAABB(ch) : DEFAULT_AABB;
     }
     case "subtraction":
     case "smoothSubtraction": {
-      return computeTightAABB(node.a);
+      return node.a ? computeTightAABB(node.a) : DEFAULT_AABB;
     }
-    // Modifiers — add conservative expansion
     case "displace": {
-      const child = computeTightAABB(node.child);
-      return expandAABB(child, node.amplitude);
+      const child = node.child ? computeTightAABB(node.child) : DEFAULT_AABB;
+      return expandAABB(child, asNumber(node.amplitude, 0.1));
     }
     case "onion": {
-      return computeTightAABB(node.child);
+      return node.child ? computeTightAABB(node.child) : DEFAULT_AABB;
     }
     case "twist":
     case "bend":
+    case "taper":
     case "elongate":
     case "symmetry":
     case "radialRepeat": {
-      // Conservative: use child AABB expanded isotropically
-      const ch = computeTightAABB(node.child);
+      const ch = node.child ? computeTightAABB(node.child) : DEFAULT_AABB;
       const maxExtent = Math.max(
         Math.abs(ch.max[0]), Math.abs(ch.min[0]),
         Math.abs(ch.max[1]), Math.abs(ch.min[1]),
-        Math.abs(ch.max[2]), Math.abs(ch.min[2])
+        Math.abs(ch.max[2]), Math.abs(ch.min[2]),
+        1.0
       );
       return { min: [-maxExtent, -maxExtent, -maxExtent], max: [maxExtent, maxExtent, maxExtent] };
     }
-    case "repeat": {
-      // Infinite repeat — fall back to defaults
-      return { min: [-4, -4, -4], max: [4, 4, 4] };
-    }
     case "repeatLimited": {
-      const period = node.period;
-      const limit = node.limit;
+      const period = asVec3(node.period, [2, 2, 2]);
+      const limit = asVec3(node.limit, [1, 1, 1]);
       const hw: Vec3 = [
         (limit[0] + 0.5) * period[0],
         (limit[1] + 0.5) * period[1],
         (limit[2] + 0.5) * period[2],
       ];
-      const childAABB = computeTightAABB(node.child);
+      const childAABB = node.child ? computeTightAABB(node.child) : DEFAULT_UNIT_AABB;
       const childMax = [Math.abs(childAABB.max[0]), Math.abs(childAABB.max[1]), Math.abs(childAABB.max[2])];
       return {
         min: [-hw[0] - childMax[0], -hw[1] - childMax[1], -hw[2] - childMax[2]],
@@ -402,107 +442,146 @@ export function computeTightAABB(node: SDFNode): AABB {
       };
     }
     case "transform": {
-      const child = computeTightAABB(node.child);
-      // Apply translate only (rotation AABB expansion is conservative)
-      const tx = node.translate || [0, 0, 0];
-      const scale = typeof node.scale === "number"
-        ? node.scale
-        : node.scale
-          ? Math.max(node.scale[0], node.scale[1], node.scale[2])
-          : 1;
-      const halfX = Math.max(Math.abs(child.max[0]), Math.abs(child.min[0])) * scale;
-      const halfY = Math.max(Math.abs(child.max[1]), Math.abs(child.min[1])) * scale;
-      const halfZ = Math.max(Math.abs(child.max[2]), Math.abs(child.min[2])) * scale;
+      const child = node.child ? computeTightAABB(node.child) : DEFAULT_UNIT_AABB;
+      const tx = asVec3(node.translate, [0, 0, 0]);
+      const sc = asVec3(node.scale, [1, 1, 1]);
+      const maxSc = Math.max(Math.abs(sc[0]), Math.abs(sc[1]), Math.abs(sc[2]), 0.01);
+      const halfX = Math.max(Math.abs(child.max[0]), Math.abs(child.min[0])) * maxSc;
+      const halfY = Math.max(Math.abs(child.max[1]), Math.abs(child.min[1])) * maxSc;
+      const halfZ = Math.max(Math.abs(child.max[2]), Math.abs(child.min[2])) * maxSc;
       return {
         min: [tx[0] - halfX, tx[1] - halfY, tx[2] - halfZ],
         max: [tx[0] + halfX, tx[1] + halfY, tx[2] + halfZ],
       };
     }
-    // hexShellCells (WS3.2)
+    case "sweep": {
+      const pts: Vec3[] = Array.isArray(node.path) ? node.path.map((p: any) => asVec3(p, [0, 0, 0])) : [];
+      const r = asNumber(node.radius, 0.2);
+      if (pts.length > 0) {
+        let minX = Infinity, minY = Infinity, minZ = Infinity;
+        let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+        for (const p of pts) {
+          minX = Math.min(minX, p[0]); minY = Math.min(minY, p[1]); minZ = Math.min(minZ, p[2]);
+          maxX = Math.max(maxX, p[0]); maxY = Math.max(maxY, p[1]); maxZ = Math.max(maxZ, p[2]);
+        }
+        return { min: [minX - r, minY - r, minZ - r], max: [maxX + r, maxY + r, maxZ + r] };
+      }
+      return DEFAULT_AABB;
+    }
+    case "revolve": {
+      const c = asVec3(node.center, [0, 0, 0]);
+      const profile = Array.isArray(node.profile) ? node.profile : [];
+      let min_y = -1, max_y = 1, max_r = 1;
+      if (profile.length > 0) {
+        min_y = Math.min(...profile.map((p: any) => Array.isArray(p) ? p[0] : 0));
+        max_y = Math.max(...profile.map((p: any) => Array.isArray(p) ? p[0] : 0));
+        max_r = Math.max(...profile.map((p: any) => Array.isArray(p) ? Math.abs(p[1]) : 0.5));
+      }
+      return { min: [c[0] - max_r, c[1] + min_y, c[2] - max_r], max: [c[0] + max_r, c[1] + max_y, c[2] + max_r] };
+    }
     case "hexShellCells": {
-      return computeTightAABB((node as any).child);
+      return node.child ? computeTightAABB(node.child) : DEFAULT_AABB;
     }
     default:
-      return { min: [-4, -4, -4], max: [4, 4, 4] };
+      return { min: [-3.5, -3.5, -3.5], max: [3.5, 3.5, 3.5] };
   }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WS1.1 — Minimum Feature Thickness Scan
 // Returns the narrowest feature in the tree (in world-space units).
-// The worker uses this to auto-raise resolution so features stay ≥ 3 voxels.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function computeMinFeatureThickness(node: SDFNode): number {
   let min = Infinity;
 
-  const visit = (n: SDFNode) => {
-    switch (n.op) {
-      case "torus":
-        min = Math.min(min, n.minorRadius * 2);
-        break;
-      case "box":
-        min = Math.min(min, n.size[0], n.size[1], n.size[2]);
-        break;
-      case "cylinder":
-        min = Math.min(min, n.radius * 2, n.height);
-        break;
-      case "capsule":
-        min = Math.min(min, n.radius * 2);
-        break;
-      case "hexPrism":
-        min = Math.min(min, n.radius, n.height);
-        break;
-      case "sphere":
-        min = Math.min(min, n.radius * 2);
-        break;
-      case "cone":
-        min = Math.min(min, n.radius);
-        break;
-      case "ellipsoid":
-        min = Math.min(min, n.radii[0] * 2, n.radii[1] * 2, n.radii[2] * 2);
-        break;
-      case "onion":
-        min = Math.min(min, n.thickness * 2);
-        visit(n.child);
-        return;
-    }
-    // Recurse children
-    if ("children" in n && Array.isArray((n as any).children)) {
-      for (const ch of (n as any).children) visit(ch);
-    }
-    if ("child" in n && (n as any).child) visit((n as any).child);
-    if ("a" in n && (n as any).a) visit((n as any).a);
-    if ("b" in n && (n as any).b && typeof (n as any).b === "object" && "op" in (n as any).b) {
-      visit((n as any).b);
+  const consider = (...vals: (number | undefined | null)[]) => {
+    for (const v of vals) {
+      if (typeof v === "number" && !isNaN(v) && v > 0) {
+        min = Math.min(min, v);
+      }
     }
   };
 
+  const visit = (n: any) => {
+    if (!n || typeof n !== "object") return;
+    switch (n.op) {
+      case "torus":
+        consider(n.minorRadius ? n.minorRadius * 2 : 0.2);
+        break;
+      case "box": {
+        const s = asVec3(n.size, [1, 1, 1]);
+        consider(s[0], s[1], s[2]);
+        break;
+      }
+      case "cylinder":
+        consider(n.radius ? n.radius * 2 : 0.5, n.height);
+        break;
+      case "capsule":
+        consider(n.radius ? n.radius * 2 : 0.3);
+        break;
+      case "hexPrism":
+        consider(n.radius, n.height);
+        break;
+      case "sphere":
+        consider(n.radius ? n.radius * 2 : 1.0);
+        break;
+      case "cone":
+        consider(n.radius);
+        break;
+      case "ellipsoid": {
+        const r = asVec3(n.radii, [1, 1, 1]);
+        consider(r[0] * 2, r[1] * 2, r[2] * 2);
+        break;
+      }
+      case "onion":
+        consider(n.thickness ? n.thickness * 2 : 0.1);
+        if (n.child) visit(n.child);
+        return;
+      case "sweep":
+        consider(n.radius ? n.radius * 2 : 0.2);
+        break;
+      case "revolve": {
+        if (Array.isArray(n.profile)) {
+          const minR = Math.min(...n.profile.map((pt: any) => Array.isArray(pt) ? pt[1] : 0.2));
+          consider(minR > 0 ? minR * 2 : 0.2);
+        }
+        break;
+      }
+      case "mirror":
+      case "taper":
+        if (n.child) visit(n.child);
+        return;
+    }
+    if (Array.isArray(n.children)) {
+      for (const ch of n.children) visit(ch);
+    }
+    if (n.child) visit(n.child);
+    if (n.a) visit(n.a);
+    if (n.b && typeof n.b === "object") visit(n.b);
+  };
+
   visit(node);
-  return min === Infinity ? 1.0 : min;
+  return min === Infinity || isNaN(min) ? 0.3 : min;
 }
 
-/**
- * Given a root node and desired resolution, returns the resolution needed so that
- * the thinnest feature is at least minVoxels voxels wide (capped at maxResolution).
- */
 export function autoResolution(
   node: SDFNode,
   aabb: AABB,
   requestedResolution: number,
   minVoxels = 2.5,
-  maxResolution = 96
+  maxResolution = 88
 ): { resolution: number; wasUpscaled: boolean } {
   const span = Math.max(
-    aabb.max[0] - aabb.min[0],
-    aabb.max[1] - aabb.min[1],
-    aabb.max[2] - aabb.min[2]
+    Math.max(0.5, aabb.max[0] - aabb.min[0]),
+    Math.max(0.5, aabb.max[1] - aabb.min[1]),
+    Math.max(0.5, aabb.max[2] - aabb.min[2])
   );
   const minFeature = Math.max(0.06, computeMinFeatureThickness(node));
-  // required resolution based on voxel size over the span
-  const requiredRes = Math.ceil((span * minVoxels) / minFeature);
-  const finalRes = Math.min(Math.max(requestedResolution, requiredRes), maxResolution);
-  return { resolution: finalRes, wasUpscaled: finalRes > requestedResolution };
+  const requiredRes = Math.ceil((span * minVoxels) / (isNaN(minFeature) || minFeature <= 0 ? 0.2 : minFeature));
+  const req = isNaN(requestedResolution) ? 64 : requestedResolution;
+  const finalRes = Math.min(Math.max(req, isNaN(requiredRes) ? req : requiredRes), maxResolution);
+  return { resolution: finalRes, wasUpscaled: finalRes > req };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -543,6 +622,71 @@ function sdHexShellCells(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Revolve & Sweep Signed Distance Functions
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function sdRevolve(p: Vec3, profile: [number, number][]): number {
+  const py = p[1];
+  const pr = Math.sqrt(p[0] * p[0] + p[2] * p[2]);
+  if (!profile || profile.length < 2) return Math.sqrt(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]) - 1.0;
+
+  let minDistSq = Infinity;
+  let crossings = false;
+  let yMin = Infinity;
+  let yMax = -Infinity;
+
+  for (let i = 0; i < profile.length - 1; i++) {
+    const a = profile[i];
+    const b = profile[i + 1];
+    yMin = Math.min(yMin, a[0], b[0]);
+    yMax = Math.max(yMax, a[0], b[0]);
+
+    // Segment distance in 2D (py, pr)
+    const bay = b[0] - a[0];
+    const bar = b[1] - a[1];
+    const baLenSq = bay * bay + bar * bar + 1e-8;
+    const qay = py - a[0];
+    const qar = pr - a[1];
+    const h = clamp((qay * bay + qar * bar) / baLenSq, 0, 1);
+    const dy = qay - bay * h;
+    const dr = qar - bar * h;
+    const distSq = dy * dy + dr * dr;
+    if (distSq < minDistSq) minDistSq = distSq;
+
+    // Ray test for inside/outside
+    const condY = (a[0] <= py && py < b[0]) || (b[0] <= py && py < a[0]);
+    const denom = b[0] - a[0];
+    if (condY && Math.abs(denom) > 1e-6) {
+      const rAtY = a[1] + ((py - a[0]) * (b[1] - a[1])) / denom;
+      if (pr < rAtY) crossings = !crossings;
+    }
+  }
+
+  const d = Math.sqrt(Math.max(minDistSq, 0));
+  const isInside = crossings && py >= yMin && py <= yMax;
+  return isInside ? -d : d;
+}
+
+export function sdSweep(p: Vec3, path: Vec3[], radius: number): number {
+  if (!path || path.length < 2) return vLength(p) - radius;
+  let minDist = Infinity;
+  for (let i = 0; i < path.length - 1; i++) {
+    const a = path[i];
+    const b = path[i + 1];
+    const ba: Vec3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    const pa: Vec3 = [p[0] - a[0], p[1] - a[1], p[2] - a[2]];
+    const baLenSq = ba[0] * ba[0] + ba[1] * ba[1] + ba[2] * ba[2] + 1e-8;
+    const h = clamp((pa[0] * ba[0] + pa[1] * ba[1] + pa[2] * ba[2]) / baLenSq, 0, 1);
+    const dx = pa[0] - ba[0] * h;
+    const dy = pa[1] - ba[1] * h;
+    const dz = pa[2] - ba[2] * h;
+    const dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (dist < minDist) minDist = dist;
+  }
+  return minDist - radius;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Main Recursive Evaluator
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -560,92 +704,118 @@ export interface SDFEvaluationResult {
  * crisp at perceptual boundaries even when shapes melt together.
  */
 export function evaluateSDFWithMaterial(
-  node: SDFNode, 
+  node: any, 
   p: Vec3, 
   inheritedMaterial?: MaterialDef
 ): SDFEvaluationResult {
+  if (!node || typeof node !== "object") {
+    return { distance: 1000.0, color: [0.85, 0.85, 0.85] };
+  }
+
   const effectiveMat: MaterialDef | undefined = node.material
     ? { ...inheritedMaterial, ...node.material }
     : inheritedMaterial;
 
   const nodeColor = parseColorToRgb(effectiveMat?.color);
+  const op = node.op || "sphere";
 
-  switch (node.op) {
+  switch (op) {
     case "sphere": {
-      const center = node.center || [0, 0, 0];
+      const center = asVec3(node.center, [0, 0, 0]);
+      const r = asNumber(node.radius, 1.0);
       return {
-        distance: sdSphere(vSub(p, center), node.radius),
+        distance: sdSphere(vSub(p, center), r),
         color: nodeColor,
       };
     }
 
     case "box": {
-      const center = node.center || [0, 0, 0];
+      const center = asVec3(node.center, [0, 0, 0]);
+      const size = asVec3(node.size, [1, 1, 1]);
+      const rounding = asNumber(node.rounding, 0);
       return {
-        distance: sdBox(vSub(p, center), node.size, node.rounding || 0),
+        distance: sdBox(vSub(p, center), size, rounding),
         color: nodeColor,
       };
     }
 
     case "cylinder": {
-      const center = node.center || [0, 0, 0];
+      const center = asVec3(node.center, [0, 0, 0]);
+      const r = asNumber(node.radius, 0.5);
+      const h = asNumber(node.height, 1.0);
+      const rounding = asNumber(node.rounding, 0);
       return {
-        distance: sdCylinder(vSub(p, center), node.radius, node.height, node.rounding || 0),
+        distance: sdCylinder(vSub(p, center), r, h, rounding),
         color: nodeColor,
       };
     }
 
     case "torus": {
-      const center = node.center || [0, 0, 0];
+      const center = asVec3(node.center, [0, 0, 0]);
+      const R = asNumber(node.majorRadius, 1.0);
+      const r = asNumber(node.minorRadius, 0.25);
       return {
-        distance: sdTorus(vSub(p, center), node.majorRadius, node.minorRadius),
+        distance: sdTorus(vSub(p, center), R, r),
         color: nodeColor,
       };
     }
 
     case "capsule": {
+      const a = asVec3(node.a, [0, -0.5, 0]);
+      const b = asVec3(node.b, [0, 0.5, 0]);
+      const r = asNumber(node.radius, 0.25);
       return {
-        distance: sdCapsule(p, node.a, node.b, node.radius),
+        distance: sdCapsule(p, a, b, r),
         color: nodeColor,
       };
     }
 
     case "cone": {
-      const center = node.center || [0, 0, 0];
+      const center = asVec3(node.center, [0, 0, 0]);
+      const r = asNumber(node.radius, 0.5);
+      const h = asNumber(node.height, 1.0);
       return {
-        distance: sdCone(vSub(p, center), node.radius, node.height),
+        distance: sdCone(vSub(p, center), r, h),
         color: nodeColor,
       };
     }
 
     case "hexPrism": {
-      const center = node.center || [0, 0, 0];
+      const center = asVec3(node.center, [0, 0, 0]);
+      const r = asNumber(node.radius, 0.5);
+      const h = asNumber(node.height, 1.0);
+      const rounding = asNumber(node.rounding, 0);
       return {
-        distance: sdHexPrism(vSub(p, center), node.radius, node.height, node.rounding || 0),
+        distance: sdHexPrism(vSub(p, center), r, h, rounding),
         color: nodeColor,
       };
     }
 
     case "ellipsoid": {
-      const center = node.center || [0, 0, 0];
+      const center = asVec3(node.center, [0, 0, 0]);
+      const radii = asVec3(node.radii, [1, 1, 1]);
       return {
-        distance: sdEllipsoid(vSub(p, center), node.radii),
+        distance: sdEllipsoid(vSub(p, center), radii),
         color: nodeColor,
       };
     }
 
     case "pyramid": {
-      const center = node.center || [0, 0, 0];
+      const center = asVec3(node.center, [0, 0, 0]);
+      const h = asNumber(node.height, 1.0);
+      const base = asVec3(node.baseSize, [1, 1, 1]);
       return {
-        distance: sdPyramid(vSub(p, center), node.height, node.baseSize),
+        distance: sdPyramid(vSub(p, center), h, [base[0], base[1]]),
         color: nodeColor,
       };
     }
 
     case "union": {
-      let best = evaluateSDFWithMaterial(node.children[0], p, effectiveMat);
-      for (let i = 1; i < node.children.length; i++) {
-        const cur = evaluateSDFWithMaterial(node.children[i], p, effectiveMat);
+      const validChildren = Array.isArray(node.children) ? node.children.filter((c: any) => c && typeof c === "object") : [];
+      if (validChildren.length === 0) return { distance: 1000.0, color: nodeColor };
+      let best = evaluateSDFWithMaterial(validChildren[0], p, effectiveMat);
+      for (let i = 1; i < validChildren.length; i++) {
+        const cur = evaluateSDFWithMaterial(validChildren[i], p, effectiveMat);
         if (cur.distance < best.distance) {
           best = cur;
         }
@@ -654,9 +824,11 @@ export function evaluateSDFWithMaterial(
     }
 
     case "intersection": {
-      let best = evaluateSDFWithMaterial(node.children[0], p, effectiveMat);
-      for (let i = 1; i < node.children.length; i++) {
-        const cur = evaluateSDFWithMaterial(node.children[i], p, effectiveMat);
+      const validChildren = Array.isArray(node.children) ? node.children.filter((c: any) => c && typeof c === "object") : [];
+      if (validChildren.length === 0) return { distance: 1000.0, color: nodeColor };
+      let best = evaluateSDFWithMaterial(validChildren[0], p, effectiveMat);
+      for (let i = 1; i < validChildren.length; i++) {
+        const cur = evaluateSDFWithMaterial(validChildren[i], p, effectiveMat);
         if (cur.distance > best.distance) {
           best = cur;
         }
@@ -665,6 +837,8 @@ export function evaluateSDFWithMaterial(
     }
 
     case "subtraction": {
+      if (!node.a) return { distance: 1000.0, color: nodeColor };
+      if (!node.b) return evaluateSDFWithMaterial(node.a, p, effectiveMat);
       const da = evaluateSDFWithMaterial(node.a, p, effectiveMat);
       const db = evaluateSDFWithMaterial(node.b, p, effectiveMat);
       const dist = Math.max(-db.distance, da.distance);
@@ -675,30 +849,27 @@ export function evaluateSDFWithMaterial(
     }
 
     case "smoothUnion": {
-      // WS1.3: blend geometry with polynomial smooth-min,
-      // but pick winner color by nearest unblended distance (no lerp).
-      let resA = evaluateSDFWithMaterial(node.children[0], p, effectiveMat);
-      for (let i = 1; i < node.children.length; i++) {
-        const resB = evaluateSDFWithMaterial(node.children[i], p, effectiveMat);
-        const k = node.k || 0.3;
-        
-        // Polynomial smooth-min for geometry
+      const validChildren = Array.isArray(node.children) ? node.children.filter((c: any) => c && typeof c === "object") : [];
+      if (validChildren.length === 0) return { distance: 1000.0, color: nodeColor };
+      let resA = evaluateSDFWithMaterial(validChildren[0], p, effectiveMat);
+      const k = Math.max(asNumber(node.k, 0.3), 1e-5);
+      for (let i = 1; i < validChildren.length; i++) {
+        const resB = evaluateSDFWithMaterial(validChildren[i], p, effectiveMat);
         const h = clamp(0.5 + 0.5 * (resB.distance - resA.distance) / k, 0.0, 1.0);
         const d = resB.distance * (1.0 - h) + resA.distance * h - k * h * (1.0 - h);
-        
-        // Nearest-surface color (no gradient blend across the seam)
         const winnerColor = resA.distance <= resB.distance ? resA.color : resB.color;
-        
         resA = { distance: d, color: winnerColor };
       }
       return resA;
     }
 
     case "smoothIntersection": {
-      let resA = evaluateSDFWithMaterial(node.children[0], p, effectiveMat);
-      for (let i = 1; i < node.children.length; i++) {
-        const resB = evaluateSDFWithMaterial(node.children[i], p, effectiveMat);
-        const k = node.k || 0.3;
+      const validChildren = Array.isArray(node.children) ? node.children.filter((c: any) => c && typeof c === "object") : [];
+      if (validChildren.length === 0) return { distance: 1000.0, color: nodeColor };
+      let resA = evaluateSDFWithMaterial(validChildren[0], p, effectiveMat);
+      const k = Math.max(asNumber(node.k, 0.3), 1e-5);
+      for (let i = 1; i < validChildren.length; i++) {
+        const resB = evaluateSDFWithMaterial(validChildren[i], p, effectiveMat);
         const h = clamp(0.5 - 0.5 * (resB.distance - resA.distance) / k, 0.0, 1.0);
         const d = resB.distance * (1.0 - h) + resA.distance * h + k * h * (1.0 - h);
         resA = { distance: d, color: resA.color };
@@ -707,12 +878,13 @@ export function evaluateSDFWithMaterial(
     }
 
     case "smoothSubtraction": {
+      if (!node.a) return { distance: 1000.0, color: nodeColor };
+      if (!node.b) return evaluateSDFWithMaterial(node.a, p, effectiveMat);
       const da = evaluateSDFWithMaterial(node.a, p, effectiveMat);
       const db = evaluateSDFWithMaterial(node.b, p, effectiveMat);
-      const k = node.k || 0.3;
+      const k = Math.max(asNumber(node.k, 0.3), 1e-5);
       const h = clamp(0.5 - 0.5 * (da.distance + db.distance) / k, 0.0, 1.0);
       const d = da.distance * (1.0 - h) - db.distance * h + k * h * (1.0 - h);
-      // WS1.3: nearest-surface wins
       return {
         distance: d,
         color: da.distance < -db.distance ? da.color : db.color,
@@ -767,37 +939,47 @@ export function evaluateSDFWithMaterial(
     }
 
     case "displace": {
-      const freq = node.frequency || 3.0;
+      const freq = asNumber(node.frequency, 3.0);
+      const amp = asNumber(node.amplitude, 0.1);
       const res = evaluateSDFWithMaterial(node.child, p, effectiveMat);
-      const disp = Math.sin(freq * p[0]) * Math.sin(freq * p[1]) * Math.sin(freq * p[2]) * node.amplitude;
+      const disp = Math.sin(freq * p[0]) * Math.sin(freq * p[1]) * Math.sin(freq * p[2]) * amp;
       return { distance: res.distance + disp, color: res.color };
     }
 
     case "elongate": {
+      const sz = asVec3(node.size, [1, 1, 1]);
       const q: Vec3 = [
-        p[0] - clamp(p[0], -node.size[0] / 2, node.size[0] / 2),
-        p[1] - clamp(p[1], -node.size[1] / 2, node.size[1] / 2),
-        p[2] - clamp(p[2], -node.size[2] / 2, node.size[2] / 2),
+        p[0] - clamp(p[0], -sz[0] / 2, sz[0] / 2),
+        p[1] - clamp(p[1], -sz[1] / 2, sz[1] / 2),
+        p[2] - clamp(p[2], -sz[2] / 2, sz[2] / 2),
       ];
       return evaluateSDFWithMaterial(node.child, q, effectiveMat);
     }
 
     case "transform": {
+      if (!node.child) return { distance: 1000.0, color: nodeColor };
       let tp: Vec3 = [...p];
       if (node.translate) {
-        tp = [tp[0] - node.translate[0], tp[1] - node.translate[1], tp[2] - node.translate[2]];
+        const tr = asVec3(node.translate);
+        tp = [tp[0] - tr[0], tp[1] - tr[1], tp[2] - tr[2]];
       }
       if (node.rotate) {
-        tp = rotatePoint(tp, [-node.rotate[0], -node.rotate[1], -node.rotate[2]]);
+        const rot = asVec3(node.rotate);
+        tp = rotatePoint(tp, [-rot[0], -rot[1], -rot[2]]);
       }
       let scaleMult = 1.0;
       if (node.scale) {
         if (typeof node.scale === "number") {
-          tp = [tp[0] / node.scale, tp[1] / node.scale, tp[2] / node.scale];
-          scaleMult = node.scale;
+          const sc = Math.max(node.scale, 0.001);
+          tp = [tp[0] / sc, tp[1] / sc, tp[2] / sc];
+          scaleMult = sc;
         } else {
-          tp = [tp[0] / node.scale[0], tp[1] / node.scale[1], tp[2] / node.scale[2]];
-          scaleMult = Math.min(node.scale[0], Math.min(node.scale[1], node.scale[2]));
+          const sc = asVec3(node.scale, [1, 1, 1]);
+          const sx = Math.max(sc[0], 0.001);
+          const sy = Math.max(sc[1], 0.001);
+          const sz = Math.max(sc[2], 0.001);
+          tp = [tp[0] / sx, tp[1] / sy, tp[2] / sz];
+          scaleMult = Math.min(sx, Math.min(sy, sz));
         }
       }
       const res = evaluateSDFWithMaterial(node.child, tp, effectiveMat);
@@ -805,8 +987,46 @@ export function evaluateSDFWithMaterial(
     }
 
     case "onion": {
+      const thick = asNumber(node.thickness, 0.1);
       const res = evaluateSDFWithMaterial(node.child, p, effectiveMat);
-      return { distance: Math.abs(res.distance) - node.thickness, color: res.color };
+      return { distance: Math.abs(res.distance) - thick, color: res.color };
+    }
+
+    case "revolve": {
+      const center = node.center || [0, 0, 0];
+      const cp = vSub(p, center);
+      return {
+        distance: sdRevolve(cp, node.profile),
+        color: nodeColor,
+      };
+    }
+
+    case "sweep": {
+      return {
+        distance: sdSweep(p, node.path, node.radius),
+        color: nodeColor,
+      };
+    }
+
+    case "mirror": {
+      let mp: Vec3 = [...p];
+      const offset = node.offset || 0;
+      const axIdx = node.axis === "y" ? 1 : (node.axis === "z" ? 2 : 0);
+      mp[axIdx] = Math.abs(mp[axIdx]) - offset;
+      return evaluateSDFWithMaterial(node.child, mp, effectiveMat);
+    }
+
+    case "taper": {
+      let tp: Vec3 = [...p];
+      const factor = node.factor || 0.3;
+      const axIdx = node.axis === "x" ? 0 : (node.axis === "z" ? 2 : 1);
+      const otherAxes = [0, 1, 2].filter((i) => i !== axIdx);
+      const h = p[axIdx];
+      const scale = Math.max(1.0 + factor * h, 0.05);
+      tp[otherAxes[0]] /= scale;
+      tp[otherAxes[1]] /= scale;
+      const res = evaluateSDFWithMaterial(node.child, tp, effectiveMat);
+      return { distance: res.distance * scale, color: res.color };
     }
 
     default: {

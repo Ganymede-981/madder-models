@@ -89,6 +89,36 @@ export const PyramidNodeSchema = z.object({
   material: MaterialDefSchema.optional(),
 });
 
+export const RevolveNodeSchema = z.object({
+  op: z.literal("revolve"),
+  profile: z.array(z.tuple([z.number(), z.number()])).min(2),
+  center: Vec3Schema.optional(),
+  material: MaterialDefSchema.optional(),
+});
+
+export const MirrorNodeSchema = z.object({
+  op: z.literal("mirror"),
+  axis: z.enum(["x", "y", "z"]),
+  offset: z.number().optional(),
+  child: z.lazy(() => SDFNodeSchema),
+  material: MaterialDefSchema.optional(),
+});
+
+export const SweepNodeSchema = z.object({
+  op: z.literal("sweep"),
+  path: z.array(Vec3Schema).min(2),
+  radius: z.number().positive(),
+  material: MaterialDefSchema.optional(),
+});
+
+export const TaperNodeSchema = z.object({
+  op: z.literal("taper"),
+  factor: z.number(),
+  axis: z.enum(["x", "y", "z"]).optional(),
+  child: z.lazy(() => SDFNodeSchema),
+  material: MaterialDefSchema.optional(),
+});
+
 // Recursive SDFNode Schema
 export const SDFNodeSchema: z.ZodType<any> = z.lazy(() =>
   z.discriminatedUnion("op", [
@@ -101,6 +131,8 @@ export const SDFNodeSchema: z.ZodType<any> = z.lazy(() =>
     HexPrismNodeSchema,
     EllipsoidNodeSchema,
     PyramidNodeSchema,
+    RevolveNodeSchema,
+    SweepNodeSchema,
     z.object({
       op: z.literal("union"),
       children: z.array(SDFNodeSchema).min(1),
@@ -162,6 +194,7 @@ export const SDFNodeSchema: z.ZodType<any> = z.lazy(() =>
       child: SDFNodeSchema,
       material: MaterialDefSchema.optional(),
     }),
+    MirrorNodeSchema,
     z.object({
       op: z.literal("twist"),
       strength: z.number(),
@@ -174,6 +207,7 @@ export const SDFNodeSchema: z.ZodType<any> = z.lazy(() =>
       child: SDFNodeSchema,
       material: MaterialDefSchema.optional(),
     }),
+    TaperNodeSchema,
     z.object({
       op: z.literal("displace"),
       amplitude: z.number(),

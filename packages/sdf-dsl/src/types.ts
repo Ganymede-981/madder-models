@@ -209,6 +209,40 @@ export interface HexShellCellsNode {
   material?: MaterialDef;
 }
 
+/** Axially symmetric organic shape revolved from a piecewise (y, radius) silhouette */
+export interface RevolveNode {
+  op: "revolve";
+  profile: [number, number][];
+  center?: Vec3;
+  material?: MaterialDef;
+}
+
+/** Bilateral symmetry folded across an axis with optional offset */
+export interface MirrorNode {
+  op: "mirror";
+  axis: "x" | "y" | "z";
+  offset?: number;
+  child: SDFNode;
+  material?: MaterialDef;
+}
+
+/** Continuous 3D curved tube / extrusion along a 3D path */
+export interface SweepNode {
+  op: "sweep";
+  path: Vec3[];
+  radius: number;
+  material?: MaterialDef;
+}
+
+/** Linear scale taper along a given axis */
+export interface TaperNode {
+  op: "taper";
+  factor: number;
+  axis?: "x" | "y" | "z";
+  child: SDFNode;
+  material?: MaterialDef;
+}
+
 export type SDFNode =
   | SphereNode
   | BoxNode
@@ -219,6 +253,8 @@ export type SDFNode =
   | HexPrismNode
   | EllipsoidNode
   | PyramidNode
+  | RevolveNode
+  | SweepNode
   | UnionNode
   | IntersectionNode
   | SubtractionNode
@@ -229,8 +265,10 @@ export type SDFNode =
   | RepeatLimitedNode
   | RadialRepeatNode
   | SymmetryNode
+  | MirrorNode
   | TwistNode
   | BendNode
+  | TaperNode
   | DisplaceNode
   | ElongateNode
   | TransformNode

@@ -2,6 +2,8 @@ import os
 import sys
 import json
 import re
+import time
+import httpx
 import traceback
 from typing import Optional, Dict, Any, List
 from fastapi import FastAPI, HTTPException
@@ -28,12 +30,59 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
+# ─────────────────────────────────────────────────────────────────────────────
+# Groq Multi-Key Router (OTPM Rate Limit Mitigation)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_groq_key_index = 0
+_groq_clients_cache: Dict[str, Any] = {}
+
+def get_all_groq_keys() -> List[str]:
+    """Collects all configured Groq API keys from environment for multi-key routing."""
+    keys: List[str] = []
+    
+    # 1. Comma / semicolon / space-separated list in GROQ_API_KEYS
+    raw_keys = os.getenv("GROQ_API_KEYS", "")
+    if raw_keys:
+        for k in re.split(r"[,;\s]+", raw_keys.strip()):
+            k_clean = k.strip()
+            if k_clean and k_clean not in keys:
+                keys.append(k_clean)
+                
+    # 2. Standard single GROQ_API_KEY
+    primary = os.getenv("GROQ_API_KEY", "").strip()
+    if primary and primary not in keys:
+        keys.append(primary)
+        
+    # 3. Enumerated keys GROQ_API_KEY_1, GROQ_API_KEY_2, etc.
+    for i in range(1, 20):
+        enum_k = os.getenv(f"GROQ_API_KEY_{i}", "").strip()
+        if enum_k and enum_k not in keys:
+            keys.append(enum_k)
+            
+    return keys
+
+def get_primary_groq_key() -> str:
+    """Returns the first available Groq API key from the pool."""
+    keys = get_all_groq_keys()
+    return keys[0] if keys else ""
+
+def get_groq_client_for_key(api_key: str) -> Any:
+    """Returns a cached or new Groq client for the given key."""
+    from groq import Groq
+    if api_key not in _groq_clients_cache:
+        _groq_clients_cache[api_key] = Groq(api_key=api_key)
+    return _groq_clients_cache[api_key]
+
+ALL_GROQ_KEYS = get_all_groq_keys()
+GROQ_API_KEY = get_primary_groq_key()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
 
 print("=== Madder Models Architect & Sculptor Studio ===")
 print(f"[*] Env loaded from: {ENV_FILE}")
-print(f"[*] Groq Key: {'YES (' + GROQ_API_KEY[:8] + '...)' if GROQ_API_KEY else 'NO (Missing in .env)'}")
+print(f"[*] Groq Keys Loaded: {len(ALL_GROQ_KEYS)} key(s) in rotation pool")
+for i, k in enumerate(ALL_GROQ_KEYS):
+    print(f"    ├─ Key #{i+1}: {k[:8]}...{k[-4:]}")
 print(f"[*] Active Model: {GROQ_MODEL}")
 print(f"[*] Server listening on http://localhost:{os.getenv('PORT', '8000')}")
 print("=================================================")
@@ -43,38 +92,39 @@ sys.stdout.flush()
 # System Prompts
 # ─────────────────────────────────────────────────────────────────────────────
 
-SCULPTOR_SYSTEM_PROMPT = """You are the AI 3D Geometry & Material Engine for Madder Models, an organic AI-native 3D modeling tool.
-You generate and refine vivid, fluid 3D shapes using Signed Distance Functions (SDF) Domain-Specific Language (SDF-DSL).
+SCULPTOR_SYSTEM_PROMPT = """You are the Lead 3D Sculptor for Madder Models, an AI-native 3D modeling studio.
+You generate complete, highly detailed, beautifully proportioned 3D models using Signed Distance Functions (SDF) Domain-Specific Language (SDF-DSL).
 
-CRITICAL DESIGN PRINCIPLES:
-1. ORGANIC & FLUID: Avoid rigid boxes where possible. Use 'smoothUnion' (blend radius k=0.2 to 0.7) to melt shapes seamlessly like clay.
-2. VIVID PER-NODE MATERIALS: Assign a 'material' object with 'color' to primitive nodes (or group nodes).
-   - 'color' can be ANY hex code (e.g. '#2d6a4f', '#f97316', '#dc2626', '#3b82f6', '#fbbf24') OR any color name ('green', 'orange', 'crimson', 'cyan', 'gold', 'emerald', 'lavender', 'dark blue', 'neon pink', 'brown', 'sandstone', 'slate', 'ivory', etc.).
-3. SUBTRACTION & CARVING: Use 'smoothSubtraction' to carve hollow living spaces, honeycombs, window ports, or pores.
-   CRITICAL NESTING RULE: Features that are conceptually attached to a deformed parent (e.g. windows on a twisted spire,
-   portholes on a bent tube) MUST be nested inside that parent's twist/bend node — never placed as siblings in the outer smoothUnion.
-   Correct pattern:
-     { "op": "smoothUnion", "children": [
-       { "op": "twist", "strength": 0.5, "child":
-         { "op": "smoothSubtraction", "a": <spire>, "b": <windows> }
-       },
-       <other parts>
-     ]}
-   Wrong pattern (sibling):
-     { "op": "smoothUnion", "children": [
-       { "op": "twist", "strength": 0.5, "child": <spire> },
-       <windows>     ← WRONG: windows not following the twist
-     ]}
-4. REPETITION & PATTERNS: Use 'repeatLimited' or 'radialRepeat' (for flowers, domes, gears, starships) and 'symmetry' (for creatures, vehicles, faces).
-5. DEFORMATIONS: Use 'twist', 'bend', 'displace' (ripples/bumps), or 'onion' (hollow shell walls).
-6. HOLLOW BEFORE CARVING: If a part has cavities (cells, windows, pores), ALWAYS wrap the hull in 'onion' first to create
-   a shell, then carve into the shell — never cut cells into a solid mass.
-   For hex-cell biomimetic surfaces, use:
-     { "op": "hexShellCells", "shellThickness": 0.1, "cellSize": 0.3, "cellDepth": 0.15, "child": <hull> }
-7. RESOLUTION: Use resolution 96 for typical models, up to 128 for high-detail requests. The compiler auto-raises
-   resolution if features are thinner than 3 voxels, so do NOT inflate resolution to work around thin features.
+CORE PRINCIPLES:
+1. ORGANIC & SHARP BLENDING:
+   - Use 'smoothUnion' (k=0.15 to 0.45) for organic connections (melting foliage clusters, branches into trunks, muscles, creature anatomy, spires).
+   - Use standard 'union' for sharp mechanical assemblies, furniture, or distinct objects so sharp corners and edges don't melt into blobs.
+2. DETAILED DECOMPOSITION & NATURAL PHYSICAL STRUCTURE:
+   - Faithfully model all components from the blueprint. Build out complete, solid, physically believable structures:
+     • For trees/nature: 
+       - Trunk: Sturdy upright 'cylinder' or 'capsule' firmly grounded on the floor (base at y <= 0). NEVER use an inverted cone with the tip pointing down at the ground!
+       - Canopy: Lush, voluminous organic green crown using 'displace' (amplitude 0.08 to 0.15) over a generous sphere, or a 'smoothUnion' (k=0.35 to 0.5) of 2–4 overlapping foliage spheres that melt into a full, cloud-like crown.
+     • For furniture/benches:
+       - Seat: Solid, substantial slab (rounded 'box' with thickness 0.14 to 0.22, width 1.3 to 1.8, depth 0.4 to 0.6). DO NOT create razor-thin floating individual slats!
+       - Legs: Sturdy support legs ('cylinder' or 'box' with radius/width 0.08 to 0.12) resting firmly on the ground (bottom at y = 0).
+       - Backrest/Arms: Solid, well-connected slabs or rails.
+     • For vehicles/spaceships: Solid fuselage/body + aerodynamic canopy/cockpit + sturdy wings/thrusters.
+     • For architecture: Solid foundation base + pillars/towers + decorative roofs and accents.
+3. PHYSICAL GROUNDING & PROPORTIONS:
+   - Ground level is at y = 0. Any object that rests on the ground (tree trunk base, bench legs, vehicle wheels, pedestals) MUST reach y ≈ 0 (or slightly below, e.g. y = -0.1 for tree roots). Nothing should hover unnaturally in midair!
+   - MINIMUM THICKNESS (>= 0.12): Every physical feature must have tangible thickness. In SDF meshing, razor-thin geometry (< 0.08) fragments into floating particles or dissolves. Always give parts solid volume and substance!
+4. VIVID MATERIALS & CONTRAST:
+   - Assign rich materials with 'color', optional 'roughness' (0.0 to 1.0), and 'metalness' (0.0 to 1.0) to parts.
+   - Use contrasting tones: rich wood/sandstone/emerald/cobalt/crimson primaries, metallic gold/silver trims, carbon/charcoal accents.
+5. PROCEDURAL OPERATORS:
+   - Use 'revolve' for organic curved axial silhouettes (vases, mushrooms, bottles, balloons, flared bells).
+   - Use 'sweep' for smooth 3D curved tubes and paths (horns, pipes, curved railings, vines).
+   - Use 'mirror' (axis: "x"|"y"|"z") for bilateral symmetry (limbs, wings, paired legs/wheels).
+   - Use 'twist', 'bend', 'taper', 'displace', 'onion', 'radialRepeat' to add rich procedural shape.
+6. NO UNREQUESTED GROUND SLABS:
+   - Model the scene cleanly within bounds [-3.5, 3.5]. Do not add a flat ground slab unless explicitly requested.
 
-SUPPORTED PRIMITIVES & OPERATORS:
+COMPLETE OPERATOR & PRIMITIVE REFERENCE:
 - sphere: { "op": "sphere", "radius": number, "center"?: [x,y,z], "material"?: { "color": string, "roughness"?: number, "metalness"?: number } }
 - box: { "op": "box", "size": [w,h,d], "center"?: [x,y,z], "rounding"?: number, "material"?: { ... } }
 - cylinder: { "op": "cylinder", "radius": number, "height": number, "center"?: [x,y,z], "rounding"?: number, "material"?: { ... } }
@@ -84,74 +134,72 @@ SUPPORTED PRIMITIVES & OPERATORS:
 - hexPrism: { "op": "hexPrism", "radius": number, "height": number, "center"?: [x,y,z], "rounding"?: number, "material"?: { ... } }
 - ellipsoid: { "op": "ellipsoid", "radii": [rx,ry,rz], "center"?: [x,y,z], "material"?: { ... } }
 - pyramid: { "op": "pyramid", "height": number, "baseSize": [w,d], "center"?: [x,y,z], "material"?: { ... } }
+- revolve: { "op": "revolve", "profile": [[y, r], ...min 2 pts], "center"?: [x,y,z], "material"?: { ... } }
+- sweep: { "op": "sweep", "path": [[x,y,z], ...min 2 pts], "radius": number, "material"?: { ... } }
+- mirror: { "op": "mirror", "axis": "x"|"y"|"z", "offset"?: number, "child": SDFNode, "material"?: { ... } }
 - union: { "op": "union", "children": SDFNode[], "material"?: { ... } }
-- intersection: { "op": "intersection", "children": SDFNode[], "material"?: { ... } }
-- subtraction: { "op": "subtraction", "a": SDFNode, "b": SDFNode, "material"?: { ... } }
 - smoothUnion: { "op": "smoothUnion", "k": number, "children": SDFNode[], "material"?: { ... } }
+- subtraction: { "op": "subtraction", "a": SDFNode, "b": SDFNode, "material"?: { ... } }
 - smoothSubtraction: { "op": "smoothSubtraction", "k": number, "a": SDFNode, "b": SDFNode, "material"?: { ... } }
+- intersection: { "op": "intersection", "children": SDFNode[], "material"?: { ... } }
+- smoothIntersection: { "op": "smoothIntersection", "k": number, "children": SDFNode[], "material"?: { ... } }
 - repeatLimited: { "op": "repeatLimited", "period": [x,y,z], "limit": [x,y,z], "child": SDFNode, "material"?: { ... } }
 - radialRepeat: { "op": "radialRepeat", "count": number, "axis"?: "x"|"y"|"z", "child": SDFNode, "material"?: { ... } }
 - symmetry: { "op": "symmetry", "axes": ["x"|"y"|"z"], "child": SDFNode, "material"?: { ... } }
 - twist: { "op": "twist", "strength": number, "child": SDFNode, "material"?: { ... } }
 - bend: { "op": "bend", "strength": number, "child": SDFNode, "material"?: { ... } }
+- taper: { "op": "taper", "factor": number, "axis"?: "x"|"y"|"z", "child": SDFNode, "material"?: { ... } }
 - displace: { "op": "displace", "amplitude": number, "frequency"?: number, "child": SDFNode, "material"?: { ... } }
 - elongate: { "op": "elongate", "size": [x,y,z], "child": SDFNode, "material"?: { ... } }
 - transform: { "op": "transform", "translate"?: [x,y,z], "rotate"?: [degX,degY,degZ], "scale"?: [sx,sy,sz]|number, "child": SDFNode, "material"?: { ... } }
 - onion: { "op": "onion", "thickness": number, "child": SDFNode, "material"?: { ... } }
 - hexShellCells: { "op": "hexShellCells", "shellThickness": number, "cellSize": number, "cellDepth": number, "child": SDFNode, "material"?: { ... } }
 
-REQUIRED ROOT DOCUMENT STRUCTURE:
+DOCUMENT JSON FORMAT:
+Output pure SDF Document JSON starting with:
 {
   "version": "sdf-dsl-1",
   "name": "Model Title",
   "description": "Short description",
   "bounds": { "min": [-3.5, -3.5, -3.5], "max": [3.5, 3.5, 3.5] },
   "resolution": 96,
-  "root": {
-    "op": "smoothUnion",
-    "k": 0.5,
-    "children": [ ... ]
-  }
-}
+  "root": { ... }
+}"""
 
-REASONING INSTRUCTIONS:
-Briefly plan the 3D geometry coordinates in <think> in under 60 words, then immediately output the pure SDF Document JSON. Do not write lengthy explanations."""
+ARCHITECT_SYSTEM_PROMPT = """You are the Senior 3D Scene Architect for Madder Models.
+Your job is to decompose the user's prompt into clear, coherent physical semantic parts that form a complete, well-composed, stylistically solid 3D scene.
 
-ARCHITECT_SYSTEM_PROMPT = """You are the Scene Architect for Madder Models, an AI 3D modeling tool.
-Your job is to decompose a user's concept into 3–6 named semantic parts that a separate SDF math engine will build.
+GUIDELINES:
+- Identify all major components, secondary features, accessories, and distinct objects requested in the prompt.
+- For each part, provide a descriptive name, its relative 3D placement [x, y, z], scale, vibrant material color/finish, and recommended geometry type.
+- SPATIAL & PHYSICAL COHESION:
+  • Ground level is at y = 0. Objects intended to stand on the ground (tree trunks, bench legs, furniture, pedestals) MUST reach ground level (y ≈ 0).
+  • Tree trunks are sturdy upright cylinders/capsules, NEVER inverted cone points!
+  • Benches and furniture must be designed as solid, tangible slabs (seat thickness >= 0.15) with sturdy support legs, NEVER fragile paper-thin slats (< 0.08) that look like floating sticks.
+  • Tree canopies should be lush, voluminous organic crowns (displaced sphere or generous smoothUnion of overlapping spheres).
+  • Keep all parts substantial and thick (minimum thickness >= 0.12).
+- Do NOT add a ground plane or floor slab unless explicitly requested by the user prompt.
 
-For each part describe:
-- What shape/silhouette it needs (hull)
-- Whether domain warps apply (bend, twist, taper, ripple)
-- Whether it needs carved negative space (windows, cells, pores) — flag requiresShell: true for lattice/biomimetic cavities
-- Whether it has attached smaller features (fins, handles, legs, chimneys)
-
-Output ONLY a valid JSON object in this exact schema (no prose, no markdown):
+Output ONLY valid JSON in this exact schema (no prose, no markdown):
 {
   "sceneName": "...",
   "description": "...",
   "parts": [
     {
       "id": "part_0",
-      "name": "HumanReadableName",
-      "description": "What this part represents",
+      "name": "PartName",
+      "description": "What this part represents and how it connects to the scene",
       "anchor": [x, y, z],
       "scale": 1.0,
       "color": "#hexcode or color name",
+      "material": { "roughness": 0.3, "metalness": 0.5 },
       "geometryPlan": {
-        "hull": { "type": "sphere|box|cylinder|cone|ellipsoid|pyramid|hexPrism", "params": { "radius": 1.5 } },
-        "deformations": [{ "type": "twist", "params": { "strength": 0.4 } }],
-        "cavities": [{ "type": "hexCell", "anchor": [0,0,0], "params": { "cellSize": 0.3 }, "requiresShell": true }],
-        "appendages": [{ "type": "capsule", "anchor": [0.5, 0, 0], "count": 4, "params": { "radius": 0.1, "length": 0.4 } }]
+        "type": "revolve|sweep|cylinder|sphere|box|torus|capsule|cone|ellipsoid|hexPrism|pyramid",
+        "description": "Geometry strategy (e.g. sturdy upright cylinder trunk, lush organic canopy cluster, solid bench seat slab with sturdy legs)"
       }
     }
   ]
-}
-
-Rules:
-- 3 to 6 parts maximum — decompose into the minimum meaningful semantic units.
-- Keep reasoning inside <think> to under 40 words, then output ONLY the JSON object immediately.
-- Output ONLY the JSON object, no other text."""
+}"""
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Utility: JSON extraction and normalization
@@ -356,50 +404,153 @@ def normalize_sdf_document(parsed: Any, fallback_name: str = "AI Model") -> dict
 # ─────────────────────────────────────────────────────────────────────────────
 # Groq Client: direct execution with reasoning
 # ─────────────────────────────────────────────────────────────────────────────
+# Groq Client: direct execution with reasoning & fallback
+# ─────────────────────────────────────────────────────────────────────────────
 
-def call_groq(client: Any, messages: List[Dict[str, str]], temperature: float = 0.3) -> str:
-    """Calls Groq using the configured model."""
+# ─────────────────────────────────────────────────────────────────────────────
+# Groq Client: direct execution with multi-key routing, backoff & fallback
+# ─────────────────────────────────────────────────────────────────────────────
+
+def call_groq(
+    client: Any = None,
+    messages: List[Dict[str, str]] = None,
+    temperature: float = 0.3,
+    max_tokens: int = 2000,
+    api_key: Optional[str] = None,
+) -> str:
+    """
+    Calls Groq using multi-key routing across all available keys with OTPM backoff/rotation
+    and seamless Gemini Flash Lite fallback.
+    """
+    global _groq_key_index
     load_dotenv(dotenv_path=ENV_FILE, override=True)
-    model_name = os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b")
-    
-    print(f"[*] Querying Groq model: {model_name}...")
-    sys.stdout.flush()
-    completion = client.chat.completions.create(
-        model=model_name,
-        messages=messages,
-        max_tokens=2500,
-        temperature=temperature,
-    )
-    content = completion.choices[0].message.content
-    if not content or not content.strip():
-        raise RuntimeError(f"Empty response from {model_name}")
-        
-    print(f"[OK] Response received ({len(content)} chars)")
-    sys.stdout.flush()
-    return content
+    model_name = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")
+    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
+
+    # Collect available Groq keys
+    pool = get_all_groq_keys()
+    if api_key and api_key not in pool:
+        pool.insert(0, api_key)
+
+    num_keys = len(pool)
+    if num_keys == 0 and client is None:
+        print("[WARN] No Groq API keys configured.")
+    else:
+        # Starting offset in rotation pool
+        start_idx = _groq_key_index % max(1, num_keys) if num_keys > 0 else 0
+
+        for attempt_offset in range(max(1, num_keys)):
+            current_idx = (start_idx + attempt_offset) % num_keys if num_keys > 0 else 0
+            current_key = pool[current_idx] if pool else None
+            active_client = get_groq_client_for_key(current_key) if current_key else client
+            key_tag = f"key #{current_idx + 1} ({current_key[:8]}...)" if current_key else "default client"
+            
+            # Allow generous token allowance for complex multi-part scenes
+            groq_tokens = min(max_tokens, 2400)
+
+            try:
+                print(f"[*] Querying Groq model: {model_name} via {key_tag} (attempt {attempt_offset + 1}, max_tokens={groq_tokens})...")
+                sys.stdout.flush()
+                completion = active_client.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    max_tokens=groq_tokens,
+                    temperature=temperature,
+                )
+                content = completion.choices[0].message.content
+                if content and content.strip():
+                    print(f"[OK] Response received via {key_tag} ({len(content)} chars)")
+                    sys.stdout.flush()
+                    # Distribute load to next key for subsequent call
+                    if num_keys > 1:
+                        _groq_key_index = (current_idx + 1) % num_keys
+                    return content
+            except Exception as e:
+                err_str = str(e)
+                print(f"[WARN] Groq request failed on {key_tag}: {err_str}")
+                sys.stdout.flush()
+                if "429" in err_str or "rate_limit" in err_str.lower() or "otpm" in err_str.lower():
+                    if num_keys > 1 and attempt_offset < num_keys - 1:
+                        print(f"[*] Groq OTPM rate limit encountered on {key_tag}. Rotating immediately to next key in pool...")
+                        sys.stdout.flush()
+                        _groq_key_index = (current_idx + 1) % num_keys
+                        continue
+                    elif num_keys == 1 and attempt_offset == 0:
+                        print(f"[*] Groq OTPM rate limit encountered. Waiting 2.0s before single-key retry...")
+                        sys.stdout.flush()
+                        time.sleep(2.0)
+                        try:
+                            completion = active_client.chat.completions.create(
+                                model=model_name,
+                                messages=messages,
+                                max_tokens=max_tokens,
+                                temperature=temperature,
+                            )
+                            content = completion.choices[0].message.content
+                            if content and content.strip():
+                                print(f"[OK] Response received on retry ({len(content)} chars)")
+                                sys.stdout.flush()
+                                return content
+                        except Exception as retry_err:
+                            print(f"[WARN] Groq retry error: {retry_err}")
+                            sys.stdout.flush()
+                continue
+
+    # Seamless fallback to Gemini if all Groq keys are exhausted or rate-limited
+    if gemini_key:
+        print("[*] Switching to Gemini (gemini-3.5-flash-lite) fallback to complete request...")
+        sys.stdout.flush()
+        try:
+            endpoint = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {gemini_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": os.getenv("JUDGE_MODEL", "gemini-3.5-flash-lite"),
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            with httpx.Client(timeout=40.0) as http_client:
+                resp = http_client.post(endpoint, headers=headers, json=payload)
+                if resp.status_code == 200:
+                    content = resp.json()["choices"][0]["message"]["content"]
+                    if content and content.strip():
+                        print(f"[OK] Response received from Gemini fallback ({len(content)} chars)")
+                        sys.stdout.flush()
+                        return content
+                else:
+                    print(f"[WARN] Gemini fallback returned HTTP {resp.status_code}: {resp.text}")
+                    sys.stdout.flush()
+        except Exception as fallback_err:
+            print(f"[ERROR] Gemini fallback exception: {fallback_err}")
+            sys.stdout.flush()
+
+    raise RuntimeError("All model providers (Groq keys and Gemini fallback) failed or were rate-limited.")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # WS2 — Architect & Sculptor Pipeline
 # ─────────────────────────────────────────────────────────────────────────────
 
 def plan_scene_blueprint(client: Any, prompt: str) -> dict:
-    """Stage 1: Architect — decompose the concept into 3-6 semantic parts."""
-    print(f"[Architect] Decomposing: '{prompt}'")
+    """Stage 1: Architect — decompose the concept into 4-8 detailed semantic parts."""
+    print(f"[Architect] Decomposing: '{prompt}' into detailed semantic parts")
     sys.stdout.flush()
     
     user_content = (
-        f"Decompose this 3D scene concept into 3–6 semantic parts:\n\n\"{prompt}\"\n\n"
+        f"Decompose this 3D scene concept into 4–8 detailed semantic parts with fine geometric features, spatial coordinates, and operator choices:\n\n\"{prompt}\"\n\n"
         "Output ONLY the JSON blueprint object, no other text."
     )
     raw = call_groq(
         client=client,
         messages=[{"role": "system", "content": ARCHITECT_SYSTEM_PROMPT},
                   {"role": "user", "content": user_content}],
-        temperature=0.4,
+        temperature=0.3,
+        max_tokens=1200,
     )
     parsed = extract_json_from_llm_response(raw)
     if not isinstance(parsed, dict) or "parts" not in parsed:
-        # Graceful fallback: construct basic blueprint if not in format
         return {
             "sceneName": prompt[:30].strip(),
             "description": prompt,
@@ -415,22 +566,25 @@ def plan_scene_blueprint(client: Any, prompt: str) -> dict:
                 }
             ]
         }
-    print(f"[Architect] Blueprint: {len(parsed['parts'])} parts")
+    print(f"[Architect] Blueprint: {len(parsed['parts'])} detailed parts")
     sys.stdout.flush()
     return parsed
 
 def synthesize_scene_sdf(client: Any, blueprint: dict, original_prompt: str) -> dict:
     """Stage 2: Sculptor — convert the blueprint into an SDF document."""
-    print(f"[Sculptor] Synthesizing SDF for blueprint '{blueprint.get('sceneName', '?')}'")
+    print(f"[Sculptor] Synthesizing SDF for blueprint '{blueprint.get('sceneName', '?')}' ({len(blueprint.get('parts', []))} parts)")
     sys.stdout.flush()
     
     user_content = (
         f"ORIGINAL REQUEST: \"{original_prompt}\"\n\n"
         f"SCENE BLUEPRINT (from Architect):\n{json.dumps(blueprint, indent=2)}\n\n"
-        "Convert each part's geometryPlan into a tagged SDF sub-tree. "
-        "Merge all part sub-trees into the root smoothUnion. "
-        "Respect the anchor and scale of each part. "
-        "When cavities[].requiresShell is true, wrap the hull in 'onion' or use 'hexShellCells' before carving. "
+        "SCULPTING DIRECTIVES:\n"
+        "1. Convert each part's geometryPlan into a detailed, articulated, solid SDF sub-tree.\n"
+        "2. PHYSICAL GROUNDING: Ground level is at y = 0. Structural bases, tree trunks, and furniture legs MUST stand firmly on the ground (base reaches y <= 0). Tree trunks MUST be upright cylinders or capsules, NEVER inverted cone needles!\n"
+        "3. SUBSTANTIAL THICKNESS: Every feature must have solid tangible volume (minimum thickness >= 0.12). For benches/furniture, model solid seat slabs and sturdy legs, NOT razor-thin floating slats.\n"
+        "4. NATURAL VOLUMES: For tree canopies and organic shapes, create lush, cohesive, cloud-like foliage (smoothUnion of generous overlapping spheres or displaced sphere), not harsh disjointed spheres.\n"
+        "5. Merge all parts into the root smoothUnion with appropriate blend radius (k=0.2 to 0.45).\n"
+        "6. Respect anchors and scales. Assign vivid, contrasting materials with distinct colors, roughness, and metalness.\n"
         "Output pure SDF Document JSON starting with {\n  \"version\": \"sdf-dsl-1\",\n  \"name\": \"...\",\n  \"root\": { ... }\n}:"
     )
     raw = call_groq(
@@ -438,6 +592,7 @@ def synthesize_scene_sdf(client: Any, blueprint: dict, original_prompt: str) -> 
         messages=[{"role": "system", "content": SCULPTOR_SYSTEM_PROMPT},
                   {"role": "user", "content": user_content}],
         temperature=0.25,
+        max_tokens=2800,
     )
     parsed_raw = extract_json_from_llm_response(raw)
     return normalize_sdf_document(parsed_raw, fallback_name=blueprint.get("sceneName", original_prompt[:30].strip()))
@@ -461,9 +616,69 @@ class RefinePartRequest(BaseModel):
     instruction: str
     currentDocument: Dict[str, Any]
 
+class ChatRequest(BaseModel):
+    session_id: Optional[str] = None
+    message: str
+    groqApiKey: Optional[str] = None
+    max_rounds: Optional[int] = 3
+    new_model: Optional[bool] = False
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Endpoints
 # ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/chat")
+async def chat_endpoint(req: ChatRequest):
+    """
+    Unified LangGraph conversational 3D modeling endpoint.
+    Maintains multi-turn conversation memory and self-refinement critic loop per session.
+    """
+    load_dotenv(dotenv_path=ENV_FILE, override=True)
+    groq_key = req.groqApiKey or get_primary_groq_key()
+    if not groq_key:
+        raise HTTPException(status_code=400, detail="GROQ_API_KEY is missing in apps/api/.env (or set GROQ_API_KEY_1).")
+
+    from langchain_core.messages import HumanMessage
+    from graph import madder_graph
+
+    session_id = req.session_id or f"session_{int(time.time())}"
+    config = {"configurable": {"thread_id": session_id}}
+
+    is_refinement = False
+    if not req.new_model:
+        try:
+            prev_snapshot = madder_graph.get_state(config)
+            if prev_snapshot and prev_snapshot.values.get("sdf_document"):
+                is_refinement = True
+        except Exception:
+            pass
+
+    inputs = {
+        "session_id": session_id,
+        "user_prompt": req.message,
+        "messages": [HumanMessage(content=req.message)],
+        "is_refinement": is_refinement,
+        "groq_api_key": groq_key,
+        "max_rounds": req.max_rounds or 3,
+    }
+
+    try:
+        result = madder_graph.invoke(inputs, config=config)
+        return {
+            "success": True,
+            "session_id": session_id,
+            "document": result.get("sdf_document"),
+            "final_score": result.get("final_score", 8.0),
+            "total_rounds": result.get("total_rounds", 1),
+            "message": result.get("assistant_message", "Model ready."),
+            "blueprint": result.get("blueprint"),
+            "is_refinement": is_refinement,
+        }
+    except Exception as e:
+        print(f"\n[ERROR] Exception during /api/chat: {e}")
+        traceback.print_exc()
+        sys.stdout.flush()
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {str(e)}")
 
 @app.get("/api/health")
 def health_check():
@@ -471,7 +686,7 @@ def health_check():
     return {
         "status": "healthy",
         "provider": "groq",
-        "groq_configured": bool(os.getenv("GROQ_API_KEY", "")),
+        "groq_configured": bool(get_primary_groq_key()),
         "active_model": os.getenv("GROQ_MODEL", "qwen/qwen3.6-27b"),
         "pipeline": "architect_sculptor_v2",
     }
@@ -479,7 +694,7 @@ def health_check():
 @app.post("/api/create")
 async def create_model(req: CreateRequest):
     load_dotenv(dotenv_path=ENV_FILE, override=True)
-    groq_key = req.groqApiKey or os.getenv("GROQ_API_KEY", "")
+    groq_key = req.groqApiKey or get_primary_groq_key()
 
     print(f"\n[POST /api/create] Prompt: '{req.prompt}'")
     sys.stdout.flush()
@@ -509,7 +724,7 @@ async def create_model(req: CreateRequest):
 @app.post("/api/refine")
 async def refine_model(req: RefineRequest):
     load_dotenv(dotenv_path=ENV_FILE, override=True)
-    groq_key = req.groqApiKey or os.getenv("GROQ_API_KEY", "")
+    groq_key = req.groqApiKey or get_primary_groq_key()
 
     print(f"\n[POST /api/refine] Prompt: '{req.prompt}'")
     sys.stdout.flush()
@@ -531,7 +746,7 @@ async def refine_model(req: RefineRequest):
             client=client,
             messages=[{"role": "system", "content": SCULPTOR_SYSTEM_PROMPT},
                       {"role": "user", "content": user_content}],
-            temperature=0.2,
+            temperature=0.45,
         )
 
         parsed_raw = extract_json_from_llm_response(raw_content)
@@ -551,7 +766,7 @@ async def refine_model(req: RefineRequest):
 async def refine_part(req: RefinePartRequest):
     """WS2 — Refine a single named part without touching the rest of the scene."""
     load_dotenv(dotenv_path=ENV_FILE, override=True)
-    groq_key = req.groqApiKey or os.getenv("GROQ_API_KEY", "")
+    groq_key = req.groqApiKey or get_primary_groq_key()
 
     print(f"\n[POST /api/refine_part] partId='{req.partId}' instruction='{req.instruction}'")
     sys.stdout.flush()

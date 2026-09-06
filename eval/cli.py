@@ -62,6 +62,17 @@ def parse_args():
         help="MLflow experiment name (default: Madder-Models-SDF-Eval).",
     )
     parser.add_argument(
+        "--critic-loop",
+        action="store_true",
+        help="Enable multi-round closed-loop self-refinement (LLMForge IterTracer + IterVision).",
+    )
+    parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=3,
+        help="Maximum refinement rounds for critic loop (default: 3).",
+    )
+    parser.add_argument(
         "--list",
         action="store_true",
         help="List all available benchmark dataset prompts.",
@@ -83,6 +94,8 @@ def main():
     pipeline = MLflowEvalPipeline(
         experiment_name=args.experiment,
         judge_model=args.judge_model,
+        use_critic_loop=args.critic_loop,
+        max_rounds=args.max_rounds,
     )
 
     # 1. Run all benchmarks

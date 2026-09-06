@@ -20,7 +20,6 @@ import type { SceneObject } from "../engine/scene-tree.js";
 import { extractSceneObjects, updateObjectTransform } from "../engine/scene-tree.js";
 import { exportToSTL, exportToOBJ, exportToGLB } from "../engine/exporter.js";
 
-export type MaterialTheme = "semantic" | "clay" | "chrome" | "hologram" | "gold" | "normal" | "wireframe";
 export type TransformMode = "translate" | "rotate" | "scale" | "orbit";
 
 interface ThreeViewportProps {
@@ -34,17 +33,16 @@ interface ThreeViewportProps {
   onUpdateDocument?: (doc: SDFDocument) => void;
   transformMode?: TransformMode;
   onTransformModeChange?: (mode: TransformMode) => void;
+  qualityScore?: number | null;
 }
 
 function ModelMesh({
   geometry,
   objText,
-  materialTheme,
   wireframe,
 }: {
   geometry: THREE.BufferGeometry | null;
   objText?: string | null;
-  materialTheme: MaterialTheme;
   wireframe: boolean;
 }) {
   const meshRef = useRef<THREE.Mesh>(null);
@@ -71,62 +69,25 @@ function ModelMesh({
   }, [objText]);
 
   const activeGeometry = geometry || parsedOBJGeometry;
+  const hasColors = Boolean(activeGeometry?.getAttribute("color"));
 
-  // Material selection
+  // Always display model painted colors with full opacity, double-sided rendering, and clear visibility
   const material = useMemo(() => {
-    switch (materialTheme) {
-      case "semantic":
-        return new THREE.MeshStandardMaterial({
-          vertexColors: true,
-          roughness: 0.5,
-          metalness: 0.15,
-          wireframe,
-        });
-      case "clay":
-        return new THREE.MeshStandardMaterial({
-          color: "#e2d9cc",
-          roughness: 0.65,
-          metalness: 0.05,
-          wireframe,
-        });
-      case "chrome":
-        return new THREE.MeshStandardMaterial({
-          color: "#1e1b4b",
-          roughness: 0.15,
-          metalness: 0.9,
-          wireframe,
-        });
-      case "hologram":
-        return new THREE.MeshPhysicalMaterial({
-          color: "#818cf8",
-          emissive: "#4338ca",
-          emissiveIntensity: 0.35,
-          roughness: 0.1,
-          metalness: 0.1,
-          transmission: 0.6,
-          thickness: 1.2,
-          wireframe,
-        });
-      case "gold":
-        return new THREE.MeshStandardMaterial({
-          color: "#fbbf24",
-          roughness: 0.3,
-          metalness: 0.85,
-          wireframe,
-        });
-      case "normal":
-        return new THREE.MeshNormalMaterial({ wireframe });
-      case "wireframe":
-        return new THREE.MeshBasicMaterial({ color: "#a855f7", wireframe: true });
-      default:
-        return new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.5, wireframe });
-    }
-  }, [materialTheme, wireframe]);
+    return new THREE.MeshStandardMaterial({
+      vertexColors: hasColors,
+      color: hasColors ? "#ffffff" : "#818cf8",
+      roughness: 0.35,
+      metalness: 0.08,
+      side: THREE.DoubleSide,
+      shadowSide: THREE.DoubleSide,
+      wireframe,
+    });
+  }, [hasColors, wireframe]);
 
   if (!activeGeometry) return null;
 
   return (
-    <Center top>
+    <Center top key={activeGeometry.id}>
       <mesh ref={meshRef} geometry={activeGeometry} material={material} castShadow receiveShadow />
     </Center>
   );
@@ -135,10 +96,12 @@ function ModelMesh({
 function SceneLights() {
   return (
     <>
-      <ambientLight intensity={0.7} />
-      <directionalLight position={[10, 15, 10]} intensity={1.2} castShadow />
-      <directionalLight position={[-10, 10, -10]} intensity={0.6} color="#818cf8" />
-      <pointLight position={[0, -5, 5]} intensity={0.4} color="#ec4899" />
+      <ambientLight intensity={1.1} />
+      <directionalLight position={[10, 18, 12]} intensity={1.6} castShadow />
+      <directionalLight position={[-12, 10, -10]} intensity={1.0} color="#e0e7ff" />
+      <directionalLight position={[0, -10, 5]} intensity={0.6} color="#cbd5e1" />
+      <pointLight position={[6, 8, 6]} intensity={0.7} />
+      <hemisphereLight intensity={0.4} groundColor="#0f172a" color="#ffffff" />
     </>
   );
 }
@@ -237,8 +200,8 @@ export function ThreeViewport({
   onUpdateDocument,
   transformMode: externalTransformMode,
   onTransformModeChange,
+  qualityScore,
 }: ThreeViewportProps) {
-  const [materialTheme, setMaterialTheme] = useState<MaterialTheme>("semantic");
   const [wireframe, setWireframe] = useState(false);
   const [autoRotate, setAutoRotate] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
@@ -300,7 +263,6 @@ export function ThreeViewport({
         <ModelMesh
           geometry={geometry}
           objText={objText}
-          materialTheme={materialTheme}
           wireframe={wireframe}
         />
         <Grid
@@ -441,6 +403,33 @@ export function ThreeViewport({
         </button>
       </div>
 
+      {/* Quality Score Badge */}
+      {qualityScore !== undefined && qualityScore !== null && (
+        <div
+          style={{
+            position: "absolute",
+            top: 14,
+            left: 14,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            background: "rgba(15, 23, 42, 0.85)",
+            backdropFilter: "blur(12px)",
+            padding: "6px 14px",
+            borderRadius: "var(--radius-full)",
+            border: "1px solid rgba(245, 158, 11, 0.4)",
+            boxShadow: "0 4px 14px rgba(0,0,0,0.3)",
+            zIndex: 15,
+          }}
+          id="quality-score-badge"
+        >
+          <Sparkles size={14} color="#fbbf24" />
+          <span style={{ fontSize: 12, fontWeight: 700, color: "#fef3c7", letterSpacing: "0.02em" }}>
+            Quality: {qualityScore.toFixed(1)}/10
+          </span>
+        </div>
+      )}
+
       {/* Loading Feedback: Subtle badge when updating, Full overlay on initial load */}
       {loading && !geometry && (
         <div
@@ -489,22 +478,6 @@ export function ThreeViewport({
 
       {/* Floating Viewport Toolbars (Bottom/Right) */}
       <div className="viewport-toolbar glass-panel" style={{ borderRadius: "var(--radius-lg)", padding: 6 }}>
-        {/* Material Selector */}
-        <select
-          value={materialTheme}
-          onChange={(e) => setMaterialTheme(e.target.value as MaterialTheme)}
-          className="btn btn-sm"
-          style={{ background: "rgba(0,0,0,0.3)", border: "none", outline: "none", cursor: "pointer" }}
-        >
-          <option value="semantic">🎨 Model Painted Colors</option>
-          <option value="clay">🏺 Matte Sculpt Clay</option>
-          <option value="chrome">🔮 Cyber Chrome</option>
-          <option value="hologram">✨ Hologram Glass</option>
-          <option value="gold">🏆 Pure Gold</option>
-          <option value="normal">🌈 Normal Vector</option>
-          <option value="wireframe">📐 Wireframe Mesh</option>
-        </select>
-
         {/* Toggle Wireframe overlay */}
         <button
           onClick={() => setWireframe(!wireframe)}

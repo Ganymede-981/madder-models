@@ -80,8 +80,11 @@ const OP_ALIASES: Record<string, string> = {
   radial_repeat: "radialRepeat",
   radial_array: "radialRepeat",
   radial: "radialRepeat",
-  mirror: "symmetry",
-  reflection: "symmetry",
+  revolution: "revolve",
+  lathe: "revolve",
+  loft: "sweep",
+  tube: "sweep",
+  reflection: "mirror",
   scale: "transform",
   rotate: "transform",
   translate: "transform",
@@ -337,6 +340,56 @@ export function sanitizeSDFNode(node: any): SDFNode {
         child: sanitizeSDFNode(node.child),
         material: mat,
       } as any;
+
+    case "revolve": {
+      let rawProf = Array.isArray(node.profile) ? node.profile : [];
+      let cleanProf: [number, number][] = rawProf
+        .filter((pt: any) => Array.isArray(pt) && pt.length >= 2)
+        .map((pt: any) => [toNum(pt[0], 0), Math.max(0, toNum(pt[1], 0.5))] as [number, number]);
+      if (cleanProf.length < 2) {
+        cleanProf = [[-1.0, 0.2], [0.0, 0.8], [1.0, 0.1]];
+      }
+      return {
+        op: "revolve",
+        profile: cleanProf,
+        center: node.center ? toVec3(node.center, [0, 0, 0]) : undefined,
+        material: mat,
+      };
+    }
+
+    case "mirror":
+      return {
+        op: "mirror",
+        axis: node.axis === "y" || node.axis === "z" ? node.axis : "x",
+        offset: node.offset !== undefined ? toNum(node.offset, 0) : undefined,
+        child: sanitizeSDFNode(node.child),
+        material: mat,
+      };
+
+    case "sweep": {
+      let rawPath = Array.isArray(node.path) ? node.path : [];
+      let cleanPath: Vec3[] = rawPath
+        .filter((pt: any) => Array.isArray(pt) && pt.length >= 3)
+        .map((pt: any) => toVec3(pt, [0, 0, 0]));
+      if (cleanPath.length < 2) {
+        cleanPath = [[0, -1, 0], [0, 0, 0.5], [0, 1, 0]];
+      }
+      return {
+        op: "sweep",
+        path: cleanPath,
+        radius: Math.max(0.01, toNum(node.radius, 0.2)),
+        material: mat,
+      };
+    }
+
+    case "taper":
+      return {
+        op: "taper",
+        factor: toNum(node.factor, 0.5),
+        axis: node.axis === "x" || node.axis === "z" ? node.axis : "y",
+        child: sanitizeSDFNode(node.child),
+        material: mat,
+      };
 
     default:
       // Graceful fallback for any unknown op: convert to smoothUnion or sphere
