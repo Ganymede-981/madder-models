@@ -101,17 +101,33 @@ def rotate_point(p: np.ndarray, angles_deg: np.ndarray) -> np.ndarray:
     
     return np.stack([x3, y3, z2], axis=-1)
 
+def _as_float(val: Any, default: float = 0.0) -> float:
+    """Safely coerces any value (including nested lists, strings, None) to float without raising TypeError."""
+    if val is None:
+        return default
+    if isinstance(val, (int, float)):
+        return float(val)
+    if isinstance(val, (list, tuple, np.ndarray)):
+        if len(val) > 0 and val[0] is not None:
+            return _as_float(val[0], default)
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
 def _as_vec3(val: Any, default: Tuple[float, float, float] = (0.0, 0.0, 0.0)) -> np.ndarray:
     """Ensures input is always a 1D float32 array with exactly 3 elements [x, y, z]."""
     if val is None:
         return np.array(default, dtype=np.float32)
     if isinstance(val, (int, float)):
-        return np.array([float(val), float(val), float(val)], dtype=np.float32)
+        f = float(val)
+        return np.array([f, f, f], dtype=np.float32)
     if isinstance(val, (list, tuple, np.ndarray)):
         lst = list(val)
-        x = float(lst[0]) if len(lst) > 0 and lst[0] is not None else default[0]
-        y = float(lst[1]) if len(lst) > 1 and lst[1] is not None else default[1]
-        z = float(lst[2]) if len(lst) > 2 and lst[2] is not None else default[2]
+        x = _as_float(lst[0], default[0]) if len(lst) > 0 else default[0]
+        y = _as_float(lst[1], default[1]) if len(lst) > 1 else default[1]
+        z = _as_float(lst[2], default[2]) if len(lst) > 2 else default[2]
         return np.array([x, y, z], dtype=np.float32)
     return np.array(default, dtype=np.float32)
 
@@ -123,7 +139,7 @@ def compute_tight_aabb(node: Any) -> Tuple[np.ndarray, np.ndarray]:
     op = node.get("op", "sphere")
     
     if op == "sphere":
-        r = float(node.get("radius", 1.0))
+        r = _as_float(node.get("radius", 1.0), 1.0)
         c = _as_vec3(node.get("center"))
         return c - r, c + r
     
@@ -133,14 +149,14 @@ def compute_tight_aabb(node: Any) -> Tuple[np.ndarray, np.ndarray]:
         return c - s, c + s
     
     elif op in ("cylinder", "hexPrism"):
-        r = float(node.get("radius", 0.5))
-        h = float(node.get("height", 1.0)) / 2.0
+        r = _as_float(node.get("radius", 0.5), 0.5)
+        h = _as_float(node.get("height", 1.0), 1.0) / 2.0
         c = _as_vec3(node.get("center"))
         return c - np.array([r, h, r], dtype=np.float32), c + np.array([r, h, r], dtype=np.float32)
     
     elif op == "torus":
-        R = float(node.get("majorRadius", 1.0))
-        r = float(node.get("minorRadius", 0.25))
+        R = _as_float(node.get("majorRadius", 1.0), 1.0)
+        r = _as_float(node.get("minorRadius", 0.25), 0.25)
         c = _as_vec3(node.get("center"))
         bound = R + r
         return c - np.array([bound, r, bound], dtype=np.float32), c + np.array([bound, r, bound], dtype=np.float32)
@@ -148,7 +164,7 @@ def compute_tight_aabb(node: Any) -> Tuple[np.ndarray, np.ndarray]:
     elif op == "capsule":
         a = _as_vec3(node.get("a"), (0.0, -0.5, 0.0))
         b = _as_vec3(node.get("b"), (0.0, 0.5, 0.0))
-        r = float(node.get("radius", 0.25))
+        r = _as_float(node.get("radius", 0.25), 0.25)
         min_p = np.minimum(a, b) - r
         max_p = np.maximum(a, b) + r
         return min_p, max_p
@@ -159,9 +175,15 @@ def compute_tight_aabb(node: Any) -> Tuple[np.ndarray, np.ndarray]:
         return c - radii, c + radii
     
     elif op in ("pyramid", "cone"):
-        h = float(node.get("height", 1.5))
+        h = _as_float(node.get("height", 1.5), 1.5)
         c = _as_vec3(node.get("center"))
-        base = float(node.get("radius", 1.0)) if op == "cone" else max(node.get("baseSize", [1.0, 1.0])) / 2.0
+        raw_base = node.get("baseSize", [1.0, 1.0])
+        if op == "cone":
+            base = _as_float(node.get("radius", 1.0), 1.0)
+        elif isinstance(raw_base, (list, tuple, np.ndarray)) and len(raw_base) > 0:
+            base = max([_as_float(x, 1.0) for x in raw_base]) / 2.0
+        else:
+            base = _as_float(raw_base, 1.0) / 2.0
         return c - np.array([base, h/2.0, base], dtype=np.float32), c + np.array([base, h/2.0, base], dtype=np.float32)
 
     elif op in ("union", "smoothUnion", "intersection", "smoothIntersection"):
@@ -204,7 +226,7 @@ def compute_tight_aabb(node: Any) -> Tuple[np.ndarray, np.ndarray]:
 
     elif op == "sweep":
         path = node.get("path", [[0, -1, 0], [0, 1, 0]])
-        r = float(node.get("radius", 0.2))
+        r = _as_float(node.get("radius", 0.2), 0.2)
         pts = np.array(path, dtype=np.float32)
         if len(pts) > 0:
             return np.min(pts, axis=0) - r, np.max(pts, axis=0) + r
@@ -214,7 +236,7 @@ def compute_tight_aabb(node: Any) -> Tuple[np.ndarray, np.ndarray]:
         child = node.get("child", {"op": "sphere", "radius": 1.0})
         c_min, c_max = compute_tight_aabb(child)
         axis = node.get("axis", "x")
-        offset = float(node.get("offset", 0.0))
+        offset = _as_float(node.get("offset", 0.0), 0.0)
         ax_idx = 0 if axis == "x" else (1 if axis == "y" else 2)
         max_b = max(abs(float(c_min[ax_idx])), abs(float(c_max[ax_idx]))) + offset
         c_min[ax_idx] = -max_b
@@ -249,7 +271,7 @@ class FullSDFEvaluator:
         mat_col = parse_color(node.get("material", {}).get("color", "#818cf8"))
 
         if op == "sphere":
-            r = float(node.get("radius", 1.0))
+            r = _as_float(node.get("radius", 1.0), 1.0)
             center = _as_vec3(node.get("center"))
             d = np.linalg.norm(p - center, axis=-1) - r
             return d, np.broadcast_to(mat_col, p.shape)
@@ -257,16 +279,16 @@ class FullSDFEvaluator:
         elif op == "box":
             size = _as_vec3(node.get("size"), (1.0, 1.0, 1.0)) / 2.0
             center = _as_vec3(node.get("center"))
-            rounding = float(node.get("rounding", 0.0))
+            rounding = _as_float(node.get("rounding", 0.0), 0.0)
             q = np.abs(p - center) - size + rounding
             d = np.linalg.norm(np.maximum(q, 0.0), axis=-1) + np.minimum(np.max(q, axis=-1), 0.0) - rounding
             return d, np.broadcast_to(mat_col, p.shape)
 
         elif op == "cylinder":
-            r = float(node.get("radius", 0.5))
-            h = float(node.get("height", 1.0)) / 2.0
+            r = _as_float(node.get("radius", 0.5), 0.5)
+            h = _as_float(node.get("height", 1.0), 1.0) / 2.0
             center = _as_vec3(node.get("center"))
-            rounding = float(node.get("rounding", 0.0))
+            rounding = _as_float(node.get("rounding", 0.0), 0.0)
             cp = p - center
             d_xy = np.linalg.norm(cp[..., [0, 2]], axis=-1) - r + rounding
             d_z = np.abs(cp[..., 1]) - h + rounding
@@ -275,8 +297,8 @@ class FullSDFEvaluator:
             return d, np.broadcast_to(mat_col, p.shape)
 
         elif op == "torus":
-            R = float(node.get("majorRadius", 1.0))
-            r = float(node.get("minorRadius", 0.25))
+            R = _as_float(node.get("majorRadius", 1.0), 1.0)
+            r = _as_float(node.get("minorRadius", 0.25), 0.25)
             center = _as_vec3(node.get("center"))
             cp = p - center
             q_x = np.linalg.norm(cp[..., [0, 2]], axis=-1) - R
@@ -286,7 +308,7 @@ class FullSDFEvaluator:
         elif op == "capsule":
             a = _as_vec3(node.get("a"), (0.0, -0.5, 0.0))
             b = _as_vec3(node.get("b"), (0.0, 0.5, 0.0))
-            r = float(node.get("radius", 0.25))
+            r = _as_float(node.get("radius", 0.25), 0.25)
             ba = b - a
             pa = p - a
             ba_len_sq = np.dot(ba, ba) + 1e-8
@@ -305,8 +327,8 @@ class FullSDFEvaluator:
             return d, np.broadcast_to(mat_col, p.shape)
 
         elif op == "cone":
-            r = float(node.get("radius", 1.0))
-            h = float(node.get("height", 1.5))
+            r = _as_float(node.get("radius", 1.0), 1.0)
+            h = _as_float(node.get("height", 1.5), 1.5)
             center = _as_vec3(node.get("center"))
             cp = p - center
             qx = np.linalg.norm(cp[..., [0, 2]], axis=-1)
@@ -340,8 +362,8 @@ class FullSDFEvaluator:
             return d, np.broadcast_to(mat_col, p.shape)
 
         elif op == "hexPrism":
-            r = float(node.get("radius", 1.0))
-            h = float(node.get("height", 1.0))
+            r = _as_float(node.get("radius", 1.0), 1.0)
+            h = _as_float(node.get("height", 1.0), 1.0)
             center = _as_vec3(node.get("center"))
             cp = p - center
             kx = -0.8660254
@@ -358,9 +380,14 @@ class FullSDFEvaluator:
             return d, np.broadcast_to(mat_col, p.shape)
 
         elif op == "pyramid":
-            h = float(node.get("height", 1.5))
+            h = _as_float(node.get("height", 1.5), 1.5)
             raw_base = node.get("baseSize", [1.5, 1.5])
-            base = [float(raw_base[0]) if len(raw_base) > 0 else 1.5, float(raw_base[1]) if len(raw_base) > 1 else 1.5]
+            if isinstance(raw_base, (list, tuple, np.ndarray)):
+                base = [_as_float(raw_base[0] if len(raw_base) > 0 else 1.5, 1.5),
+                        _as_float(raw_base[1] if len(raw_base) > 1 else 1.5, 1.5)]
+            else:
+                b_val = _as_float(raw_base, 1.5)
+                base = [b_val, b_val]
             center = _as_vec3(node.get("center"))
             cp = p - center
             px = np.abs(cp[..., 0]) - base[0] * 0.5
@@ -371,7 +398,7 @@ class FullSDFEvaluator:
 
         # ── Combiners ────────────────────────────────────────────────────────
         elif op == "smoothUnion":
-            k = float(node.get("k", 0.35))
+            k = _as_float(node.get("k", 0.35), 0.35)
             children = node.get("children", [])
             if not children:
                 return np.zeros(p.shape[:-1]), np.broadcast_to(mat_col, p.shape)
@@ -405,7 +432,7 @@ class FullSDFEvaluator:
             return d_acc, col_acc
 
         elif op in ("subtraction", "smoothSubtraction"):
-            k = float(node.get("k", 0.25)) if op == "smoothSubtraction" else 0.0
+            k = _as_float(node.get("k", 0.25), 0.25) if op == "smoothSubtraction" else 0.0
             a_node = node.get("a", {"op": "sphere", "radius": 1.0})
             b_node = node.get("b", {"op": "sphere", "radius": 0.5})
             da, col_a = self._eval_node(a_node, p)
@@ -418,7 +445,7 @@ class FullSDFEvaluator:
             return d, col_a
 
         elif op in ("intersection", "smoothIntersection"):
-            k = float(node.get("k", 0.25)) if op == "smoothIntersection" else 0.0
+            k = _as_float(node.get("k", 0.25), 0.25) if op == "smoothIntersection" else 0.0
             children = node.get("children", [])
             if not children:
                 return np.zeros(p.shape[:-1]), np.broadcast_to(mat_col, p.shape)
@@ -446,11 +473,12 @@ class FullSDFEvaluator:
             if "scale" in node:
                 s_val = node["scale"]
                 if isinstance(s_val, (int, float)):
-                    tp = tp / s_val
-                    scale_mult = float(s_val)
+                    s_f = float(s_val) if s_val != 0 else 1.0
+                    tp = tp / s_f
+                    scale_mult = s_f
                 elif isinstance(s_val, (list, tuple, np.ndarray)):
                     s_arr = _as_vec3(s_val, (1.0, 1.0, 1.0))
-                    tp = tp / s_arr
+                    tp = tp / np.where(s_arr == 0, 1.0, s_arr)
                     scale_mult = float(np.min(s_arr))
             
             child = node.get("child", {"op": "sphere", "radius": 1.0})
@@ -458,7 +486,7 @@ class FullSDFEvaluator:
             return d * scale_mult, col
 
         elif op == "twist":
-            strength = float(node.get("strength", 0.5))
+            strength = _as_float(node.get("strength", 0.5), 0.5)
             c = np.cos(strength * p[..., 1])
             s = np.sin(strength * p[..., 1])
             tp_x = c * p[..., 0] - s * p[..., 2]
@@ -468,7 +496,7 @@ class FullSDFEvaluator:
             return self._eval_node(child, tp)
 
         elif op == "bend":
-            strength = float(node.get("strength", 0.5))
+            strength = _as_float(node.get("strength", 0.5), 0.5)
             c = np.cos(strength * p[..., 0])
             s = np.sin(strength * p[..., 0])
             tp_x = c * p[..., 0] - s * p[..., 1]
@@ -496,7 +524,8 @@ class FullSDFEvaluator:
             return self._eval_node(child, sp)
 
         elif op == "radialRepeat":
-            count = int(node.get("count", 4))
+            count = int(_as_float(node.get("count", 4), 4.0))
+            count = max(1, count)
             sector = (2.0 * math.pi) / count
             angle = np.arctan2(p[..., 2], p[..., 0])
             radius = np.linalg.norm(p[..., [0, 2]], axis=-1)
@@ -513,15 +542,15 @@ class FullSDFEvaluator:
             return self._eval_node(child, q)
 
         elif op == "onion":
-            thickness = float(node.get("thickness", 0.1))
+            thickness = _as_float(node.get("thickness", 0.1), 0.1)
             child = node.get("child", {"op": "sphere", "radius": 1.0})
             d, col = self._eval_node(child, p)
             return np.abs(d) - thickness, col
 
         elif op == "hexShellCells":
-            shell_th = float(node.get("shellThickness", 0.1))
-            cell_size = float(node.get("cellSize", 0.3))
-            cell_depth = float(node.get("cellDepth", 0.15))
+            shell_th = _as_float(node.get("shellThickness", 0.1), 0.1)
+            cell_size = _as_float(node.get("cellSize", 0.3), 0.3)
+            cell_depth = _as_float(node.get("cellDepth", 0.15), 0.15)
             child = node.get("child", {"op": "sphere", "radius": 1.0})
             raw_d, col = self._eval_node(child, p)
             shell = np.abs(raw_d) - shell_th
@@ -544,8 +573,8 @@ class FullSDFEvaluator:
             return d, col
 
         elif op == "displace":
-            amp = float(node.get("amplitude", 0.05))
-            freq = float(node.get("frequency", 3.0))
+            amp = _as_float(node.get("amplitude", 0.05), 0.05)
+            freq = _as_float(node.get("frequency", 3.0), 3.0)
             child = node.get("child", {"op": "sphere", "radius": 1.0})
             d, col = self._eval_node(child, p)
             disp = np.sin(p[..., 0] * freq) * np.sin(p[..., 1] * freq) * np.sin(p[..., 2] * freq) * amp
@@ -602,7 +631,7 @@ class FullSDFEvaluator:
 
         elif op == "sweep":
             path = node.get("path", [[0, -1, 0], [0, 0, 0.5], [0, 1, 0]])
-            radius = float(node.get("radius", 0.2))
+            radius = _as_float(node.get("radius", 0.2), 0.2)
             pts = np.array(path, dtype=np.float32)
             if len(pts) < 2:
                 return np.linalg.norm(p, axis=-1) - radius, np.broadcast_to(mat_col, p.shape)
@@ -627,7 +656,7 @@ class FullSDFEvaluator:
 
         elif op == "mirror":
             axis = node.get("axis", "x")
-            offset = float(node.get("offset", 0.0))
+            offset = _as_float(node.get("offset", 0.0), 0.0)
             ax_idx = 0 if axis == "x" else (1 if axis == "y" else 2)
             mp = p.copy()
             mp[..., ax_idx] = np.abs(mp[..., ax_idx]) - offset
@@ -635,7 +664,7 @@ class FullSDFEvaluator:
             return self._eval_node(child, mp)
 
         elif op == "taper":
-            factor = float(node.get("factor", 0.3))
+            factor = _as_float(node.get("factor", 0.3), 0.3)
             axis = node.get("axis", "y")
             ax_idx = 0 if axis == "x" else (1 if axis == "y" else 2)
             other_axes = [i for i in range(3) if i != ax_idx]

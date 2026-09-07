@@ -196,20 +196,20 @@ def vlm_critic_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     if not rendered_views:
         skipped = state.get("skip_render", False)
-        print(f"[LangGraph: VLMCriticNode] [WARN] No rendered views — {'code structurally invalid' if skipped else 'render unavailable'}; using synthetic verdict.")
+        print(f"[LangGraph: VLMCriticNode] [WARN] No rendered views — {'code structurally invalid' if skipped else 'render unavailable/failed'}; failing visual gate with RETRY.")
         visual_v = VisualVerdict(
-            status="RETRY" if skipped else "PASS",
-            visual_score=code_score if skipped else 7.0,
-            prompt_alignment=code_score if skipped else 7.0,
-            spatial_coherence=code_score if skipped else 7.0,
-            silhouette_quality=code_score if skipped else 7.0,
-            material_fidelity=code_score if skipped else 7.0,
-            structural_anomalies=code_score if skipped else 7.0,
-            organic_quality=code_score if skipped else 7.0,
+            status="RETRY",
+            visual_score=min(code_score, 3.0) if skipped else 2.0,
+            prompt_alignment=2.0,
+            spatial_coherence=2.0,
+            silhouette_quality=2.0,
+            material_fidelity=2.0,
+            structural_anomalies=2.0,
+            organic_quality=2.0,
             issues=["Render skipped — SDF code is structurally invalid; fix code before visual critique."]
             if skipped
-            else ["Visual critic skipped because rendering was bypassed or unavailable."],
-            recommended_patch=code_v.get("recommended_patch", "") if skipped else "",
+            else ["Model rendering failed or was unavailable; cannot verify 3D geometry."],
+            recommended_patch=code_v.get("recommended_patch", "") if skipped else "Check SDF tree for malformed parameters, invalid types, or broken geometry preventing 3D render.",
         )
     else:
         try:
@@ -220,18 +220,18 @@ def vlm_critic_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 previous_issues=prev_issues,
             )
         except Exception as e:
-            print(f"[LangGraph: VLMCriticNode] [WARN] VLM Critic failed: {e} — using baseline verdict.")
+            print(f"[LangGraph: VLMCriticNode] [WARN] VLM Critic failed: {e} — using RETRY verdict.")
             visual_v = VisualVerdict(
-                status="PASS",
-                visual_score=7.0,
-                prompt_alignment=7.0,
-                spatial_coherence=7.0,
-                silhouette_quality=7.0,
-                material_fidelity=7.0,
-                structural_anomalies=7.0,
-                organic_quality=7.0,
-                issues=[f"Visual critic warning: {str(e)}"],
-                recommended_patch="",
+                status="RETRY",
+                visual_score=3.0,
+                prompt_alignment=3.0,
+                spatial_coherence=3.0,
+                silhouette_quality=3.0,
+                material_fidelity=3.0,
+                structural_anomalies=3.0,
+                organic_quality=3.0,
+                issues=[f"Visual critic error: {str(e)}"],
+                recommended_patch="Ensure model geometry and multi-view renders are valid.",
             )
 
     # Composite score: 40% code integrity, 60% perceptual visual quality
@@ -247,18 +247,26 @@ def vlm_critic_node(state: Dict[str, Any]) -> Dict[str, Any]:
         print(f"  ├─ [WARN] Ignoring stale best_score={prev_best:.2f} — no checkpoint document saved.")
         prev_best = 0.0
 
-    if best_sdf_document is None:
-        # First scored round in this loop — seed the checkpoint
-        best_score = composite
-        best_sdf_document = copy.deepcopy(state.get("sdf_document"))
-    elif composite > prev_best:
-        best_score = composite
-        best_sdf_document = copy.deepcopy(state.get("sdf_document"))
-    else:
-        best_score = prev_best
-        if composite < prev_best:
+    # Crucial gate: A model can ONLY become or replace the best checkpoint if it actually rendered successfully!
+    rendered_ok = bool(rendered_views) and visual_v.visual_score > 3.0
+    if rendered_ok:
+        if best_sdf_document is None:
+            # First valid rendered round in this loop — seed the checkpoint
+            best_score = composite
+            best_sdf_document = copy.deepcopy(state.get("sdf_document"))
+        elif composite > prev_best:
+            best_score = composite
+            best_sdf_document = copy.deepcopy(state.get("sdf_document"))
+        else:
+            best_score = prev_best
             regressed = True
             print(f"  ├─ [REGRESSION] Round {round_num} scored {composite:.2f} < checkpoint {prev_best:.2f} — will refine from best checkpoint.")
+    else:
+        # Render failed or invalid: keep previous best checkpoint, mark regression
+        best_score = prev_best
+        regressed = (best_sdf_document is not None)
+        if regressed:
+            print(f"  ├─ [RENDER FAILURE REGRESSION] Round {round_num} unrenderable — preserving best checkpoint from prior round (Score: {best_score:.2f}).")
 
     print("\n" + "=" * 70)
     print(f" 👁️  [VLM MULTI-VIEW CRITIC] Round {round_num}: {visual_v.status} | Visual Score: {visual_v.visual_score:.1f}/10")
@@ -334,23 +342,25 @@ def sculptor_critic_refine_node(state: Dict[str, Any]) -> Dict[str, Any]:
         f"```json\n{json.dumps(current_sdf, indent=2)}\n```\n\n"
         f"DUAL-CRITIC EVALUATION FEEDBACK (Round {current_r} failures to fix):\n{combined}\n\n"
         "REFINEMENT RULES (strictly follow all):\n"
-        "1. ADDRESS EVERY visual defect and code issue listed above — do not skip any.\n"
-        "2. PHYSICAL GROUNDING & PROPORTIONS: Ground level is at y = 0. Tree trunks, furniture legs, and supports MUST stand firmly on the ground (base at y <= 0). Tree trunks MUST be upright cylinders or capsules, NEVER inverted cone needles!\n"
-        "3. SUBSTANTIAL THICKNESS (>= 0.12): Avoid razor-thin floating slats or fragile sticks. For benches/furniture, model solid seat slabs (thickness 0.15 to 0.22) and sturdy legs.\n"
-        "4. LUSH ORGANIC CANOPIES: For trees, create lush, voluminous, rounded crowns (displaced sphere or generous smoothUnion of overlapping spheres) rather than harsh clipping balls.\n"
-        "5. Preserve and articulate fine decomposed features with solid substance rather than paper-thin fragments.\n"
+        "1. SURGICAL REFINEMENT (NO FULL REWRITES): Do NOT perform a wholesale rewrite or destroy the existing hierarchy. Retain the existing decomposed components, vibrant materials, and structure. Modify ONLY the specific nodes, offsets, or dimensions that address the defects.\n"
+        "2. STRICT PARAMETER TYPES: Every scalar parameter (radius, height, majorRadius, minorRadius, rounding, thickness, amplitude, frequency, k) MUST be a single number (e.g. \"height\": 1.5), NEVER an array or list (e.g. NOT \"height\": [1.5]). Vector fields (center, size, translate, rotate, scale) MUST be 3-element float arrays [x, y, z].\n"
+        "3. ADDRESS EVERY visual defect and code issue listed above — do not skip any.\n"
+        "4. PHYSICAL GROUNDING & PROPORTIONS: Ground level is at y = 0. Tree trunks, furniture legs, and supports MUST stand firmly on the ground (base at y <= 0). Tree trunks MUST be upright cylinders or capsules, NEVER inverted cone needles!\n"
+        "5. SUBSTANTIAL THICKNESS (>= 0.12): Avoid razor-thin floating slats or fragile sticks. For benches/furniture, model solid seat slabs (thickness 0.15 to 0.22) and sturdy legs.\n"
+        "6. LUSH ORGANIC CANOPIES: For trees, create lush, voluminous, rounded crowns (displaced sphere or generous smoothUnion of overlapping spheres) rather than harsh clipping balls.\n"
+        "7. Preserve and articulate fine decomposed features with solid substance rather than paper-thin fragments.\n"
         + (
-            "6. SURGICAL EDIT: Copy every sub-tree listed in PRESERVE verbatim — only modify nodes flagged in the issue lists.\n"
-            "7. Do NOT output the same geometry as the current document. The geometry MUST be visibly improved, more detailed, and closer to the target prompt.\n"
+            "8. SURGICAL EDIT: Copy every sub-tree listed in PRESERVE verbatim — only modify nodes flagged in the issue lists.\n"
+            "9. Do NOT output the same geometry as the current document. The geometry MUST be visibly improved, more detailed, and closer to the target prompt.\n"
             if preserve_list
-            else "6. Do NOT output the same geometry as the current document. The geometry MUST be visibly improved, more detailed, and closer to the target prompt.\n"
+            else "8. Do NOT output the same geometry as the current document. The geometry MUST be visibly improved, more detailed, and closer to the target prompt.\n"
         )
         + (
-            "8. Ensure no unrequested ground plane or flat floor slabs.\n"
-            "9. Output pure SDF Document JSON starting with {\n  \"version\": \"sdf-dsl-1\",\n  \"name\": \"...\",\n  \"root\": { ... }\n}:"
+            "10. Ensure no unrequested ground plane or flat floor slabs.\n"
+            "11. Output pure SDF Document JSON starting with {\n  \"version\": \"sdf-dsl-1\",\n  \"name\": \"...\",\n  \"root\": { ... }\n}:"
             if preserve_list
-            else "7. Ensure no unrequested ground plane or flat floor slabs.\n"
-            "8. Output pure SDF Document JSON starting with {\n  \"version\": \"sdf-dsl-1\",\n  \"name\": \"...\",\n  \"root\": { ... }\n}:"
+            else "9. Ensure no unrequested ground plane or flat floor slabs.\n"
+            "10. Output pure SDF Document JSON starting with {\n  \"version\": \"sdf-dsl-1\",\n  \"name\": \"...\",\n  \"root\": { ... }\n}:"
         )
     )
 
@@ -473,7 +483,9 @@ def finalize_node(state: Dict[str, Any]) -> Dict[str, Any]:
     pre_critique = state.get("pre_critique_sdf")
     baseline = state.get("baseline_score") or 0.0
     loop_best = state.get("best_score") or 0.0
-    current_round_score = state.get("final_score") or 0.0
+    code_v = state.get("code_verdict") or {}
+    code_score = float(code_v.get("code_score", 8.0))
+    current_round_score = state.get("final_score") or code_score
     rounds = state.get("current_round", 1)
     is_refinement = state.get("is_refinement", False)
 
@@ -489,7 +501,7 @@ def finalize_node(state: Dict[str, Any]) -> Dict[str, Any]:
             print(f"[LangGraph: Finalize] Shipping checkpoint score {score:.2f} (last round was {current_round_score:.2f}).")
     else:
         doc = copy.deepcopy(current_doc)
-        score = current_round_score if current_round_score > 0 else 8.0
+        score = current_round_score if current_round_score > 0 else code_score
 
     name = doc.get("name", "3D Model")
     restored_pre_critique = (
@@ -497,11 +509,13 @@ def finalize_node(state: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     if restored_pre_critique:
-        msg = f"↩️ Kept **{name}** — the refinement loop scored lower ({loop_best:.1f}) than your existing model ({baseline:.1f}/10)."
+        msg = f"↩️ Kept **{name}** — the refinement scored lower ({loop_best:.1f}) than your existing model ({baseline:.1f}/10)."
     elif is_refinement:
-        msg = f"✨ Refined **{name}** based on your instruction. (Quality Score: {score:.1f}/10)"
+        msg = f"✨ Refined **{name}** based on your instruction."
+    elif rounds > 1:
+        msg = f"✨ Generated **{name}** in {rounds} critique rounds. (Quality Score: {score:.1f}/10)"
     else:
-        msg = f"✨ Generated **{name}** in {rounds} critique round{'s' if rounds > 1 else ''}. (Quality Score: {score:.1f}/10)"
+        msg = f"✨ Generated **{name}**."
 
     return {
         "assistant_message": msg,

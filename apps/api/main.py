@@ -264,8 +264,61 @@ def extract_json_from_llm_response(text: str) -> Any:
     # 5. Last-ditch json_repair
     return json_repair.loads(cleaned)
 
+def _sanitize_sdf_node(node: Any) -> Any:
+    """Recursively walks an SDF DSL node tree and sanitizes invalid parameter types (e.g. lists where scalars are expected)."""
+    if not isinstance(node, dict):
+        return node
+
+    scalar_keys = {
+        "radius", "height", "majorRadius", "minorRadius", "rounding", "offset",
+        "thickness", "shellThickness", "cellSize", "cellDepth", "amplitude",
+        "frequency", "factor", "strength", "k", "angle", "count"
+    }
+    vector_keys = {
+        "center", "size", "radii", "translate", "rotate", "scale", "period", "limit", "a", "b", "baseSize"
+    }
+
+    for k, v in list(node.items()):
+        if k in scalar_keys:
+            if isinstance(v, (list, tuple)):
+                try:
+                    node[k] = float(v[0]) if len(v) > 0 and v[0] is not None else 1.0
+                except (ValueError, TypeError):
+                    node[k] = 1.0
+            elif isinstance(v, str):
+                try:
+                    node[k] = float(v)
+                except ValueError:
+                    pass
+        elif k in vector_keys:
+            if isinstance(v, (int, float)):
+                f = float(v)
+                node[k] = [f, f, f]
+            elif isinstance(v, (list, tuple)):
+                cleaned = []
+                for item in v:
+                    try:
+                        cleaned.append(float(item) if item is not None else 0.0)
+                    except (ValueError, TypeError):
+                        cleaned.append(0.0)
+                node[k] = cleaned
+
+    if "children" in node and isinstance(node["children"], list):
+        node["children"] = [_sanitize_sdf_node(c) for c in node["children"] if isinstance(c, dict)]
+    for sub in ["child", "a", "b"]:
+        if sub in node and isinstance(node[sub], dict):
+            node[sub] = _sanitize_sdf_node(node[sub])
+
+    return node
+
 def normalize_sdf_document(parsed: Any, fallback_name: str = "AI Model") -> dict:
     """Normalizes any JSON structure returned by the LLM into a compliant SDFDocument with graceful fallbacks."""
+    res = _normalize_sdf_document_raw(parsed, fallback_name)
+    if isinstance(res, dict) and "root" in res:
+        res["root"] = _sanitize_sdf_node(res["root"])
+    return res
+
+def _normalize_sdf_document_raw(parsed: Any, fallback_name: str = "AI Model") -> dict:
     if not parsed:
         return {
             "version": "sdf-dsl-1",

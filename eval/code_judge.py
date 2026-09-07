@@ -86,8 +86,13 @@ def evaluate_code(
     Evaluates an SDF-DSL document strictly on code structure, mathematics, and prompt coverage
     using Gemini 3.5 Flash Lite (with Groq fallback).
     """
-    gemini_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-    groq_key = os.getenv("GROQ_API_KEY", "")
+    groq_key = os.getenv("GROQ_API_KEY") or os.getenv("GROQ_API_KEY_1") or ""
+    if not groq_key:
+        try:
+            from apps.api.main import get_primary_groq_key
+            groq_key = get_primary_groq_key()
+        except Exception:
+            pass
 
     TRUNCATION_THRESHOLD = 11500  # chars: warn if JSON is near the cut
     sdf_str = json.dumps(sdf_document, indent=2)
@@ -117,78 +122,7 @@ def evaluate_code(
         "Emit the CodeVerdict JSON object."
     )
 
-    # 1. Primary: Gemini 3.5 Flash Lite
-    target_key = api_key or gemini_key
-    if target_key:
-        resolved_model = model_name or os.getenv("JUDGE_MODEL", "gemini-3.5-flash-lite")
-        endpoint = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {target_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": resolved_model,
-            "messages": [
-                {"role": "system", "content": CODE_JUDGE_SYSTEM_PROMPT},
-                {"role": "user", "content": user_content}
-            ],
-            "temperature": 0.15,
-            "max_tokens": 800,
-        }
-
-        try:
-            import httpx
-            with httpx.Client(timeout=30.0) as client:
-                resp = client.post(endpoint, headers=headers, json=payload)
-                if resp.status_code == 200:
-                    resp_data = resp.json()
-                    usage = resp_data.get("usage", {})
-                    content = resp_data["choices"][0]["message"]["content"]
-                    if "<think>" in content and "</think>" in content:
-                        content = content.split("</think>")[-1].strip()
-
-                    parsed = json_repair.loads(content)
-                    if isinstance(parsed, dict) and "code_score" in parsed:
-                        score = float(parsed.get("code_score", 7.0))
-                        schema_valid = bool(parsed.get("schema_valid", True))
-                        nesting_correct = bool(parsed.get("nesting_correct", True))
-                        # Enforce gate: status must agree with score threshold and schema validity
-                        llm_status = parsed.get("status", "")
-                        if not schema_valid or not nesting_correct:
-                            verdict_status = "RETRY"
-                        elif score >= 6.0 and llm_status != "RETRY":
-                            verdict_status = "PASS"
-                        else:
-                            verdict_status = "RETRY"
-                        p_tok = usage.get("prompt_tokens", 0)
-                        c_tok = usage.get("completion_tokens", 0)
-                        print(f"  ├─ [Judge Provider] Google Gemini ({resolved_model}) — Tokens: {p_tok} prompt, {c_tok} completion")
-                        sys.stdout.flush()
-                        raw_issues = parsed.get("issues", [])
-                        clean_issues = [str(iss) for iss in (raw_issues if isinstance(raw_issues, list) else [raw_issues]) if iss is not None and str(iss).strip()]
-                        clean_patch = str(parsed.get("recommended_patch", "") or "")
-                        raw_preserve = parsed.get("preserve", [])
-                        clean_preserve = [str(p) for p in (raw_preserve if isinstance(raw_preserve, list) else []) if p]
-                        return CodeVerdict(
-                            status=verdict_status,
-                            code_score=score,
-                            schema_valid=schema_valid,
-                            nesting_correct=nesting_correct,
-                            bounded_coordinates=bool(parsed.get("bounded_coordinates", True)),
-                            issues=clean_issues,
-                            recommended_patch=clean_patch,
-                            preserve=clean_preserve,
-                            was_truncated=was_truncated,
-                            raw_response=content,
-                        )
-                else:
-                    print(f"[WARN] Gemini Code Judge returned HTTP {resp.status_code}: {resp.text}")
-                    sys.stdout.flush()
-        except Exception as e:
-            print(f"[WARN] Gemini Code Judge request failed: {e}. Trying fallback...")
-            sys.stdout.flush()
-
-    # 2. Fallback: Groq
+    # 1. Primary: Groq (Ultra-fast ~0.5s execution via dedicated LLM code inference)
     if groq_key:
         try:
             from groq import Groq
@@ -224,6 +158,8 @@ def evaluate_code(
                 clean_patch = str(parsed.get("recommended_patch", "") or "")
                 raw_preserve = parsed.get("preserve", [])
                 clean_preserve = [str(p) for p in (raw_preserve if isinstance(raw_preserve, list) else []) if p]
+                print(f"  ├─ [Judge Provider] Groq ({resolved_groq_model}) — Code Judge completed.")
+                sys.stdout.flush()
                 return CodeVerdict(
                     status=verdict_status,
                     code_score=score,
@@ -237,7 +173,78 @@ def evaluate_code(
                     raw_response=content,
                 )
         except Exception as e:
-            print(f"[WARN] Groq Code Judge fallback failed: {e}.")
+            print(f"[WARN] Groq Code Judge failed: {e}. Trying Gemini fallback...")
+            sys.stdout.flush()
+
+    # 2. Secondary Fallback: Gemini 3.5 Flash Lite
+    target_key = api_key or gemini_key
+    if target_key:
+        resolved_model = model_name or os.getenv("JUDGE_MODEL", "gemini-3.5-flash-lite")
+        endpoint = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {target_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": resolved_model,
+            "messages": [
+                {"role": "system", "content": CODE_JUDGE_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content}
+            ],
+            "temperature": 0.15,
+            "max_tokens": 800,
+        }
+
+        try:
+            import httpx
+            with httpx.Client(timeout=25.0) as client:
+                resp = client.post(endpoint, headers=headers, json=payload)
+                if resp.status_code == 200:
+                    resp_data = resp.json()
+                    usage = resp_data.get("usage", {})
+                    content = resp_data["choices"][0]["message"]["content"]
+                    if "<think>" in content and "</think>" in content:
+                        content = content.split("</think>")[-1].strip()
+
+                    parsed = json_repair.loads(content)
+                    if isinstance(parsed, dict) and "code_score" in parsed:
+                        score = float(parsed.get("code_score", 7.0))
+                        schema_valid = bool(parsed.get("schema_valid", True))
+                        nesting_correct = bool(parsed.get("nesting_correct", True))
+                        llm_status = parsed.get("status", "")
+                        if not schema_valid or not nesting_correct:
+                            verdict_status = "RETRY"
+                        elif score >= 6.0 and llm_status != "RETRY":
+                            verdict_status = "PASS"
+                        else:
+                            verdict_status = "RETRY"
+                        p_tok = usage.get("prompt_tokens", 0)
+                        c_tok = usage.get("completion_tokens", 0)
+                        print(f"  ├─ [Judge Provider] Google Gemini ({resolved_model}) — Tokens: {p_tok} prompt, {c_tok} completion")
+                        sys.stdout.flush()
+                        raw_issues = parsed.get("issues", [])
+                        clean_issues = [str(iss) for iss in (raw_issues if isinstance(raw_issues, list) else [raw_issues]) if iss is not None and str(iss).strip()]
+                        clean_patch = str(parsed.get("recommended_patch", "") or "")
+                        raw_preserve = parsed.get("preserve", [])
+                        clean_preserve = [str(p) for p in (raw_preserve if isinstance(raw_preserve, list) else []) if p]
+                        return CodeVerdict(
+                            status=verdict_status,
+                            code_score=score,
+                            schema_valid=schema_valid,
+                            nesting_correct=nesting_correct,
+                            bounded_coordinates=bool(parsed.get("bounded_coordinates", True)),
+                            issues=clean_issues,
+                            recommended_patch=clean_patch,
+                            preserve=clean_preserve,
+                            was_truncated=was_truncated,
+                            raw_response=content,
+                        )
+                else:
+                    print(f"[WARN] Gemini Code Judge returned HTTP {resp.status_code}: {resp.text}")
+                    sys.stdout.flush()
+        except Exception as e:
+            print(f"[WARN] Gemini Code Judge request failed: {e}.")
+            sys.stdout.flush()
 
     # 3. Rule-based fallback
     return _heuristic_code_check(prompt, sdf_document)

@@ -87,22 +87,27 @@ def build_graph():
     # Refinement Path merges into verification
     workflow.add_edge("conversational_refine", "code_judge")
 
-    # Verification Pipeline
-    workflow.add_edge("code_judge", "renderer")
-    workflow.add_edge("renderer", "vlm_critic")
+    # Interactive vs Offline Critique Pipeline
+    enable_visual_critic = os.getenv("ENABLE_VISUAL_CRITIC", "false").lower() in ("true", "1", "yes")
 
-    # Decision Gate: Pass to finalize or loop back to refine
-    workflow.add_conditional_edges(
-        "vlm_critic",
-        gate_critic_decision,
-        {
-            "finalize": "finalize",
-            "sculptor_critic_refine": "sculptor_critic_refine",
-        }
-    )
-
-    # Self-refinement loop edge
-    workflow.add_edge("sculptor_critic_refine", "code_judge")
+    if enable_visual_critic:
+        # Full offline multi-view renderer & VLM critic verification
+        workflow.add_edge("code_judge", "renderer")
+        workflow.add_edge("renderer", "vlm_critic")
+        workflow.add_conditional_edges(
+            "vlm_critic",
+            gate_critic_decision,
+            {
+                "finalize": "finalize",
+                "sculptor_critic_refine": "sculptor_critic_refine",
+            }
+        )
+        workflow.add_edge("sculptor_critic_refine", "code_judge")
+    else:
+        # Fast Interactive Path (< 4 seconds total):
+        # CodeJudge syntax/bounds validation passes directly to Finalize.
+        # The user acts as the visual judge in the live WebGL/Three.js viewport!
+        workflow.add_edge("code_judge", "finalize")
 
     # End
     workflow.add_edge("finalize", END)
